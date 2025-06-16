@@ -30,15 +30,6 @@ jobs:
         env CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -buildmode=c-archive -o build/linux-amd64/libgeesefs.a -ldflags "-X main.Version=`git rev-parse HEAD`" .
         tar -czf geesefs-linux-amd64-static.tar.gz -C build/linux-amd64 .
 
-    - name: Create Go module archive
-      run: |
-        mkdir -p build/go-module
-        cp -r . build/go-module/
-        cd build/go-module
-        # Clean up unnecessary files
-        rm -rf .git .github build
-        tar -czf ../../geesefs-go-module.tar.gz .
-
     - name: Generate checksums
       run: |
         sha256sum *.tar.gz > checksums.txt
@@ -49,7 +40,6 @@ jobs:
       with:
         files: |
           geesefs-linux-amd64-static.tar.gz
-          geesefs-go-module.tar.gz
           checksums.txt
         body: |
           ## Library Artifacts
@@ -59,12 +49,12 @@ jobs:
           ### Static Library (C-Archive) - Linux AMD64 Only
           - `geesefs-linux-amd64-static.tar.gz` - Linux AMD64 static library (.a + .h)
 
-          ### Go Module
-          - `geesefs-go-module.tar.gz` - Complete Go module source code
-
           ### Verification
-          - `checksums.txt` - SHA256 checksums for all library artifacts
+          - `checksums.txt` - SHA256 checksums for library artifacts
 
-          Each archive contains the compiled static library file and corresponding C header file for integration with C/C++ projects.
+          ### Go Module Usage
+          For Go projects, use: `go get github.com/yandex-cloud/geesefs@[version]`
+
+          The archive contains the compiled static library file and corresponding C header file for integration with C/C++ projects.
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} 
