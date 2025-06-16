@@ -24,37 +24,39 @@ jobs:
     - name: Get dependencies
       run: go mod download
 
-    - name: Build Linux AMD64 static library
+    - name: Build Linux AMD64 static binary
       run: |
-        mkdir -p build/linux-amd64
-        env CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -buildmode=c-archive -o build/linux-amd64/libgeesefs.a -ldflags "-X main.Version=`git rev-parse HEAD`" .
-        tar -czf geesefs-linux-amd64-static.tar.gz -C build/linux-amd64 .
+        VERSION=${GITHUB_REF##*/}
+        env CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -ldflags "-s -w -X main.Version=`git rev-parse HEAD`" -o geesefs-${VERSION} .
 
     - name: Generate checksums
       run: |
-        sha256sum *.tar.gz > checksums.txt
+        VERSION=${GITHUB_REF##*/}
+        sha256sum geesefs-${VERSION} > checksums.txt
 
     - name: Upload library artifacts to release
       uses: softprops/action-gh-release@v1
       if: startsWith(github.ref, 'refs/tags/')
       with:
         files: |
-          geesefs-linux-amd64-static.tar.gz
+          geesefs-*
           checksums.txt
         body: |
-          ## Library Artifacts
+          ## Static Binary
 
-          This release includes the following library formats:
+          This release includes a statically linked binary:
 
-          ### Static Library (C-Archive) - Linux AMD64 Only
-          - `geesefs-linux-amd64-static.tar.gz` - Linux AMD64 static library (.a + .h)
+          ### Static Binary - Linux AMD64
+          - `geesefs-[version]` - Standalone executable with all dependencies statically linked (e.g., `geesefs-v1.0.0`)
 
           ### Verification
-          - `checksums.txt` - SHA256 checksums for library artifacts
+          - `checksums.txt` - SHA256 checksum for the binary
 
-          ### Go Module Usage
-          For Go projects, use: `go get github.com/yandex-cloud/geesefs@[version]`
+          ### Usage
+          **Direct execution:** Download `geesefs-[version]`, make it executable (`chmod +x geesefs-[version]`), and run it directly.
+          
+          **For Go projects:** Use `go get github.com/yandex-cloud/geesefs@[version]`
 
-          The archive contains the compiled static library file and corresponding C header file for integration with C/C++ projects.
+          The binary is completely self-contained with no external dependencies required.
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} 
