@@ -26,20 +26,18 @@ jobs:
 
     - name: Build Linux AMD64 static binary
       run: |
-        VERSION=${GITHUB_REF##*/}
-        env CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -ldflags "-s -w -X main.Version=`git rev-parse HEAD`" -o geesefs-${VERSION} .
+        env CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -ldflags "-s -w -X main.Version=`git rev-parse HEAD`" -o geesefs .
 
     - name: Generate checksums
       run: |
-        VERSION=${GITHUB_REF##*/}
-        sha256sum geesefs-${VERSION} > checksums.txt
+        sha256sum geesefs > checksums.txt
 
     - name: Upload library artifacts to release
       uses: softprops/action-gh-release@v1
       if: startsWith(github.ref, 'refs/tags/')
       with:
         files: |
-          geesefs-*
+          geesefs
           checksums.txt
         body: |
           ## Static Binary
@@ -47,15 +45,15 @@ jobs:
           This release includes a statically linked binary:
 
           ### Static Binary - Linux AMD64
-          - `geesefs-[version]` - Standalone executable with all dependencies statically linked (e.g., `geesefs-v1.0.0`)
+          - `geesefs` - Standalone executable with all dependencies statically linked
 
           ### Verification
           - `checksums.txt` - SHA256 checksum for the binary
 
           ### Usage
-          **Direct execution:** Download `geesefs-[version]`, make it executable (`chmod +x geesefs-[version]`), and run it directly.
+          **Direct execution:** Download `geesefs`, make it executable (`chmod +x geesefs`), and run it directly.
           
-          **For Go projects:** Use `go get github.com/yandex-cloud/geesefs@[version]`
+          **For Go projects:** Use `go get github.com/yandex-cloud/geesefs`
 
           The binary is completely self-contained with no external dependencies required.
       env:
