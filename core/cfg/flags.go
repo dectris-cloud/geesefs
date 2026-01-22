@@ -575,6 +575,18 @@ MISC OPTIONS:
 				" Only works correctly if your S3 returns UserMetadata in listings",
 		},
 
+		cli.BoolFlag{
+			Name:  "enable-symlinks-file",
+			Usage: "Store symlinks in a hidden .symlinks file per directory instead of object metadata." +
+				" Useful for S3 backends that don't return UserMetadata in listings (e.g., AWS S3).",
+		},
+
+		cli.StringFlag{
+			Name:  "symlinks-file",
+			Value: ".symlinks",
+			Usage: "Name of the hidden file storing symlinks metadata when --enable-symlinks-file is used.",
+		},
+
 		cli.StringFlag{
 			Name:  "refresh-attr",
 			Value: ".invalidate",
@@ -884,6 +896,8 @@ func PopulateFlags(c *cli.Context) (ret *FlagStorage) {
 		RdevAttr:            c.String("rdev-attr"),
 		MtimeAttr:           c.String("mtime-attr"),
 		SymlinkAttr:         c.String("symlink-attr"),
+		SymlinksFile:        c.String("symlinks-file"),
+		EnableSymlinksFile:  c.Bool("enable-symlinks-file"),
 		RefreshAttr:         c.String("refresh-attr"),
 		CachePath:           c.String("cache"),
 		MaxDiskCacheFD:      int64(c.Int("max-disk-cache-fd")),
@@ -1088,6 +1102,7 @@ func DefaultFlags() *FlagStorage {
 		RdevAttr:            "rdev",
 		MtimeAttr:           "mtime",
 		SymlinkAttr:         "--symlink-target",
+		SymlinksFile:        ".symlinks",
 		RefreshAttr:         ".invalidate",
 		StatCacheTTL:        30 * time.Second,
 		HTTPTimeout:         30 * time.Second,
