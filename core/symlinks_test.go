@@ -15,7 +15,7 @@
 package core
 
 import (
-	"testing"
+	"fmt"
 
 	. "gopkg.in/check.v1"
 )
@@ -24,9 +24,9 @@ type SymlinksTest struct{}
 
 var _ = Suite(&SymlinksTest{})
 
-func TestSymlinks(t *testing.T) {
-	TestingT(t)
-}
+// ============================================================================
+// Tests for SymlinksFileData struct operations
+// ============================================================================
 
 func (s *SymlinksTest) TestNewSymlinksFileData(t *C) {
 	data := NewSymlinksFileData()
@@ -193,4 +193,388 @@ func (s *SymlinksTest) TestSymlinkTargetWithSpecialCharacters(t *C) {
 	target, ok = parsed.GetSymlink("link-dots")
 	t.Assert(ok, Equals, true)
 	t.Assert(target, Equals, "../.hidden-folder/.hidden-file")
+}
+
+// ============================================================================
+// Tests for Load/Save/Delete symlinks file operations with cloud storage
+// These tests use mockConditionalBackend from backend_test.go
+// ============================================================================
+
+func (s *SymlinksTest) TestSaveSymlinksFileCreateNew(t *C) {
+	mock := newMockConditionalBackend()
+
+	data := NewSymlinksFileData()
+	data.AddSymlink("link1", "../target1")
+
+	// Save new file (no expectedETag)
+	etag, err := SaveSymlinksFile(mock, "testdir", ".symlinks", data, "")
+	t.Assert(err, IsNil)
+	t.Assert(etag != "", Equals, true)
+
+	// Verify it was saved
+	_, exists := mock.objects["testdir/.symlinks"]
+	t.Assert(exists, Equals, true)
+}
+
+func (s *SymlinksTest) TestSaveSymlinksFileCreateNewPreventsOverwrite(t *C) {
+	mock := newMockConditionalBackend()
+
+	// Pre-create an existing file
+	mock.objects["testdir/.symlinks"] = &mockStoredObject{
+		data: []byte(`{"version":1,"symlinks":{}}`),
+		etag: "\"existing\"",
+	}
+
+	data := NewSymlinksFileData()
+	data.AddSymlink("link1", "../target1")
+
+	// Try to create new file (no expectedETag) - should fail because file exists
+	_, err := SaveSymlinksFile(mock, "testdir", ".symlinks", data, "")
+	t.Assert(err, NotNil)
+	t.Assert(err.Error(), Matches, ".*PreconditionFailed.*")
+}
+
+func (s *SymlinksTest) TestSaveSymlinksFileUpdateWithCorrectETag(t *C) {
+	mock := newMockConditionalBackend()
+
+	// Pre-create an existing file
+	existingETag := "\"existing-etag\""
+	mock.objects["testdir/.symlinks"] = &mockStoredObject{
+		data: []byte(`{"version":1,"symlinks":{"old":"../old-target"}}`),
+		etag: existingETag,
+	}
+
+	data := NewSymlinksFileData()
+	data.AddSymlink("link1", "../target1")
+
+	// Update with correct ETag - should succeed
+	newETag, err := SaveSymlinksFile(mock, "testdir", ".symlinks", data, existingETag)
+	t.Assert(err, IsNil)
+	t.Assert(newETag != "", Equals, true)
+	t.Assert(newETag != existingETag, Equals, true)
+}
+
+func (s *SymlinksTest) TestSaveSymlinksFileUpdateWithWrongETag(t *C) {
+	mock := newMockConditionalBackend()
+
+	// Pre-create an existing file
+	mock.objects["testdir/.symlinks"] = &mockStoredObject{
+		data: []byte(`{"version":1,"symlinks":{"old":"../old-target"}}`),
+		etag: "\"actual-etag\"",
+	}
+
+	data := NewSymlinksFileData()
+	data.AddSymlink("link1", "../target1")
+
+	// Update with wrong ETag - should fail (optimistic locking)
+	_, err := SaveSymlinksFile(mock, "testdir", ".symlinks", data, "\"wrong-etag\"")
+	t.Assert(err, NotNil)
+	t.Assert(err.Error(), Matches, ".*PreconditionFailed.*")
+}
+
+func (s *SymlinksTest) TestLoadSymlinksFile(t *C) {
+	mock := newMockConditionalBackend()
+
+	// Pre-create a file
+	existingETag := "\"test-etag\""
+	mock.objects["testdir/.symlinks"] = &mockStoredObject{
+		data: []byte(`{"version":1,"symlinks":{"link1":{"target":"../target1"}}}`),
+		etag: existingETag,
+	}
+
+	data, etag, err := LoadSymlinksFile(mock, "testdir", ".symlinks")
+	t.Assert(err, IsNil)
+	t.Assert(etag, Equals, existingETag)
+	t.Assert(data.HasSymlink("link1"), Equals, true)
+
+	target, ok := data.GetSymlink("link1")
+	t.Assert(ok, Equals, true)
+	t.Assert(target, Equals, "../target1")
+}
+
+func (s *SymlinksTest) TestLoadSymlinksFileNotFound(t *C) {
+	mock := newMockConditionalBackend()
+
+	data, etag, err := LoadSymlinksFile(mock, "testdir", ".symlinks")
+	t.Assert(err, IsNil)
+	t.Assert(etag, Equals, "")
+	t.Assert(data.IsEmpty(), Equals, true)
+}
+
+func (s *SymlinksTest) TestDeleteSymlinksFile(t *C) {
+	mock := newMockConditionalBackend()
+
+	// Pre-create a file
+	mock.objects["testdir/.symlinks"] = &mockStoredObject{
+		data: []byte(`{"version":1,"symlinks":{}}`),
+		etag: "\"test\"",
+	}
+
+	err := DeleteSymlinksFile(mock, "testdir", ".symlinks")
+	t.Assert(err, IsNil)
+
+	_, exists := mock.objects["testdir/.symlinks"]
+	t.Assert(exists, Equals, false)
+}
+
+func (s *SymlinksTest) TestSaveEmptySymlinksFileDeletesExisting(t *C) {
+	mock := newMockConditionalBackend()
+
+	// Pre-create an existing file
+	mock.objects["testdir/.symlinks"] = &mockStoredObject{
+		data: []byte(`{"version":1,"symlinks":{"link1":{"target":"../target1"}}}`),
+		etag: "\"existing\"",
+	}
+
+	// Save empty data with existing ETag should delete the file
+	emptyData := NewSymlinksFileData()
+	_, err := SaveSymlinksFile(mock, "testdir", ".symlinks", emptyData, "\"existing\"")
+	t.Assert(err, IsNil)
+
+	_, exists := mock.objects["testdir/.symlinks"]
+	t.Assert(exists, Equals, false)
+}
+
+func (s *SymlinksTest) TestConcurrentSymlinkCreation(t *C) {
+	mock := newMockConditionalBackend()
+
+	// Simulate two concurrent creations - first one wins
+	data1 := NewSymlinksFileData()
+	data1.AddSymlink("link1", "../target1")
+
+	data2 := NewSymlinksFileData()
+	data2.AddSymlink("link2", "../target2")
+
+	// First creation succeeds
+	etag1, err := SaveSymlinksFile(mock, "testdir", ".symlinks", data1, "")
+	t.Assert(err, IsNil)
+	t.Assert(etag1 != "", Equals, true)
+
+	// Second creation fails (file already exists)
+	_, err = SaveSymlinksFile(mock, "testdir", ".symlinks", data2, "")
+	t.Assert(err, NotNil)
+
+	// Proper way: load, merge, save with ETag
+	existingData, etag, err := LoadSymlinksFile(mock, "testdir", ".symlinks")
+	t.Assert(err, IsNil)
+	t.Assert(etag, Equals, etag1)
+
+	existingData.AddSymlink("link2", "../target2")
+	newETag, err := SaveSymlinksFile(mock, "testdir", ".symlinks", existingData, etag)
+	t.Assert(err, IsNil)
+	t.Assert(newETag != etag, Equals, true)
+
+	// Verify both symlinks exist
+	finalData, _, err := LoadSymlinksFile(mock, "testdir", ".symlinks")
+	t.Assert(err, IsNil)
+	t.Assert(finalData.HasSymlink("link1"), Equals, true)
+	t.Assert(finalData.HasSymlink("link2"), Equals, true)
+}
+
+// ============================================================================
+// Tests for verifying SaveSymlinksFile uses correct conditional write headers
+// ============================================================================
+
+func (s *SymlinksTest) TestSaveSymlinksFileUsesIfNoneMatchForNewFile(t *C) {
+	mock := newMockConditionalBackend()
+
+	var capturedIfNoneMatch *string
+	mock.onPutBlob = func(param *PutBlobInput) {
+		capturedIfNoneMatch = param.IfNoneMatch
+	}
+
+	data := NewSymlinksFileData()
+	data.AddSymlink("link1", "../target1")
+
+	// Save new file - should use If-None-Match: "*"
+	_, err := SaveSymlinksFile(mock, "testdir", ".symlinks", data, "")
+	t.Assert(err, IsNil)
+	t.Assert(capturedIfNoneMatch, NotNil)
+	t.Assert(*capturedIfNoneMatch, Equals, "*")
+}
+
+func (s *SymlinksTest) TestSaveSymlinksFileUsesIfMatchForUpdate(t *C) {
+	mock := newMockConditionalBackend()
+
+	// Pre-create existing file
+	existingETag := "\"existing-etag\""
+	mock.objects["testdir/.symlinks"] = &mockStoredObject{
+		data: []byte(`{"version":1,"symlinks":{}}`),
+		etag: existingETag,
+	}
+
+	var capturedIfMatch *string
+	mock.onPutBlob = func(param *PutBlobInput) {
+		capturedIfMatch = param.IfMatch
+	}
+
+	data := NewSymlinksFileData()
+	data.AddSymlink("link1", "../target1")
+
+	// Update with ETag - should use If-Match
+	_, err := SaveSymlinksFile(mock, "testdir", ".symlinks", data, existingETag)
+	t.Assert(err, IsNil)
+	t.Assert(capturedIfMatch, NotNil)
+	t.Assert(*capturedIfMatch, Equals, existingETag)
+}
+
+// ============================================================================
+// Tests for SaveSymlinksFileWithRetry (exponential backoff)
+// ============================================================================
+
+func (s *SymlinksTest) TestSaveWithRetrySucceedsOnFirstAttempt(t *C) {
+	mock := newMockConditionalBackend()
+
+	data := NewSymlinksFileData()
+	data.AddSymlink("link1", "../target1")
+
+	mergeFn := func(current *SymlinksFileData) (*SymlinksFileData, error) {
+		t.Fatal("Merge function should not be called on first success")
+		return nil, nil
+	}
+
+	newETag, err := SaveSymlinksFileWithRetry(mock, "testdir", ".symlinks", data, "", mergeFn, 3)
+	t.Assert(err, IsNil)
+	t.Assert(newETag, Not(Equals), "")
+}
+
+func (s *SymlinksTest) TestSaveWithRetryRetriesOnConflict(t *C) {
+	mock := newMockConditionalBackend()
+
+	// Pre-create a file to cause initial conflict
+	mock.objects["testdir/.symlinks"] = &mockStoredObject{
+		data: []byte(`{"version":1,"symlinks":{"existing":{"target":"../old","mtime":1}}}`),
+		etag: "\"etag-v1\"",
+	}
+
+	data := NewSymlinksFileData()
+	data.AddSymlink("newlink", "../newtarget")
+
+	mergeCallCount := 0
+	mergeFn := func(current *SymlinksFileData) (*SymlinksFileData, error) {
+		mergeCallCount++
+		// Merge: keep existing symlinks and add our new one
+		current.AddSymlink("newlink", "../newtarget")
+		return current, nil
+	}
+
+	// Try to create (If-None-Match: "*") - will fail, then retry with merge
+	newETag, err := SaveSymlinksFileWithRetry(mock, "testdir", ".symlinks", data, "", mergeFn, 3)
+	t.Assert(err, IsNil)
+	t.Assert(newETag, Not(Equals), "")
+	t.Assert(mergeCallCount, Equals, 1)
+
+	// Verify merged result contains both symlinks
+	obj := mock.objects["testdir/.symlinks"]
+	parsed, _ := ParseSymlinksFile(obj.data)
+	t.Assert(parsed.HasSymlink("existing"), Equals, true)
+	t.Assert(parsed.HasSymlink("newlink"), Equals, true)
+}
+
+func (s *SymlinksTest) TestSaveWithRetryExceedsMaxRetries(t *C) {
+	mock := newMockConditionalBackend()
+
+	// Create a mock that always fails with precondition error
+	failingMock := &alwaysConflictBackend{mock}
+
+	data := NewSymlinksFileData()
+	data.AddSymlink("link1", "../target1")
+
+	mergeCallCount := 0
+	mergeFn := func(current *SymlinksFileData) (*SymlinksFileData, error) {
+		mergeCallCount++
+		return data, nil
+	}
+
+	_, err := SaveSymlinksFileWithRetry(failingMock, "testdir", ".symlinks", data, "", mergeFn, 2)
+	t.Assert(err, NotNil)
+	t.Assert(err.Error(), Matches, ".*max retries.*exceeded.*")
+	t.Assert(mergeCallCount, Equals, 2) // Should have tried merge twice
+}
+
+func (s *SymlinksTest) TestSaveWithRetryMergeFunctionError(t *C) {
+	mock := newMockConditionalBackend()
+
+	// Pre-create a file to cause conflict
+	mock.objects["testdir/.symlinks"] = &mockStoredObject{
+		data: []byte(`{"version":1,"symlinks":{}}`),
+		etag: "\"etag-v1\"",
+	}
+
+	data := NewSymlinksFileData()
+	data.AddSymlink("link1", "../target1")
+
+	mergeFn := func(current *SymlinksFileData) (*SymlinksFileData, error) {
+		return nil, fmt.Errorf("merge conflict: cannot resolve")
+	}
+
+	_, err := SaveSymlinksFileWithRetry(mock, "testdir", ".symlinks", data, "", mergeFn, 3)
+	t.Assert(err, NotNil)
+	t.Assert(err.Error(), Matches, ".*merge function failed.*")
+}
+
+func (s *SymlinksTest) TestSaveWithRetryNoRetriesOnOtherErrors(t *C) {
+	mock := newMockConditionalBackend()
+
+	// Create a mock that returns a non-precondition error
+	errorMock := &errorBackend{mock, fmt.Errorf("network error: connection refused")}
+
+	data := NewSymlinksFileData()
+	data.AddSymlink("link1", "../target1")
+
+	mergeCallCount := 0
+	mergeFn := func(current *SymlinksFileData) (*SymlinksFileData, error) {
+		mergeCallCount++
+		return data, nil
+	}
+
+	_, err := SaveSymlinksFileWithRetry(errorMock, "testdir", ".symlinks", data, "", mergeFn, 3)
+	t.Assert(err, NotNil)
+	t.Assert(err.Error(), Matches, ".*network error.*")
+	t.Assert(mergeCallCount, Equals, 0) // Should not have tried merge
+}
+
+func (s *SymlinksTest) TestSaveWithRetryZeroMaxRetries(t *C) {
+	mock := newMockConditionalBackend()
+
+	// Pre-create a file to cause conflict
+	mock.objects["testdir/.symlinks"] = &mockStoredObject{
+		data: []byte(`{"version":1,"symlinks":{}}`),
+		etag: "\"etag-v1\"",
+	}
+
+	data := NewSymlinksFileData()
+	data.AddSymlink("link1", "../target1")
+
+	mergeCallCount := 0
+	mergeFn := func(current *SymlinksFileData) (*SymlinksFileData, error) {
+		mergeCallCount++
+		return data, nil
+	}
+
+	// With maxRetries=0, should fail immediately on conflict
+	_, err := SaveSymlinksFileWithRetry(mock, "testdir", ".symlinks", data, "", mergeFn, 0)
+	t.Assert(err, NotNil)
+	t.Assert(err.Error(), Matches, ".*max retries.*exceeded.*")
+	t.Assert(mergeCallCount, Equals, 0)
+}
+
+// alwaysConflictBackend wraps a backend and always returns precondition failed on PutBlob
+type alwaysConflictBackend struct {
+	*mockConditionalBackend
+}
+
+func (m *alwaysConflictBackend) PutBlob(param *PutBlobInput) (*PutBlobOutput, error) {
+	// Always return precondition failed
+	return nil, fmt.Errorf("PreconditionFailed: simulated conflict")
+}
+
+// errorBackend wraps a backend and returns a specific error on PutBlob
+type errorBackend struct {
+	*mockConditionalBackend
+	err error
+}
+
+func (m *errorBackend) PutBlob(param *PutBlobInput) (*PutBlobOutput, error) {
+	return nil, m.err
 }

@@ -17,9 +17,11 @@ package core
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -181,15 +183,25 @@ func SaveSymlinksFile(cloud StorageBackend, dirKey string, symlinksFileName stri
 		return "", err
 	}
 
-	// Note: S3 doesn't support conditional PUT with If-Match directly in PutBlob
-	// For true atomicity, we would need to use S3's conditional writes feature
-	// or implement a read-modify-write with retry logic
-	// For now, we do a simple PUT
-	resp, err := cloud.PutBlob(&PutBlobInput{
+	// Use conditional writes for optimistic locking (S3 feature since 2024):
+	// - If expectedETag is empty, use If-None-Match: "*" to only create if file doesn't exist
+	// - If expectedETag is provided, use If-Match to only update if ETag matches (optimistic locking)
+	putInput := &PutBlobInput{
 		Key:  key,
 		Body: bytes.NewReader(content),
 		Size: PUInt64(uint64(len(content))),
-	})
+	}
+
+	if expectedETag == "" {
+		// Creating a new file - use If-None-Match to prevent overwriting
+		ifNoneMatch := "*"
+		putInput.IfNoneMatch = &ifNoneMatch
+	} else {
+		// Updating existing file - use If-Match for optimistic locking
+		putInput.IfMatch = &expectedETag
+	}
+
+	resp, err := cloud.PutBlob(putInput)
 
 	if err != nil {
 		return "", err
@@ -201,6 +213,105 @@ func SaveSymlinksFile(cloud StorageBackend, dirKey string, symlinksFileName stri
 	}
 
 	return newETag, nil
+}
+
+// SymlinksMergeFunc is called when a conflict is detected during save.
+// It receives the current data from cloud storage and must return the merged data to save.
+// The function should merge the caller's pending changes into currentData.
+type SymlinksMergeFunc func(currentData *SymlinksFileData) (*SymlinksFileData, error)
+
+// isPreconditionFailed checks if an error is a precondition failed error (412)
+func isPreconditionFailed(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := err.Error()
+	return strings.Contains(errStr, "PreconditionFailed") ||
+		strings.Contains(errStr, "412") ||
+		strings.Contains(errStr, "Precondition Failed") ||
+		strings.Contains(errStr, "conditional request failed")
+}
+
+// SaveSymlinksFileWithRetry saves the .symlinks file with automatic retry on conflict.
+// Uses exponential backoff and calls the merge function to resolve conflicts.
+// Parameters:
+//   - cloud: the storage backend
+//   - dirKey: directory key (prefix)
+//   - symlinksFileName: name of the symlinks file (e.g., ".symlinks")
+//   - data: initial data to save
+//   - expectedETag: current known ETag (empty for new files)
+//   - mergeFn: function to merge changes on conflict (receives current cloud data)
+//   - maxRetries: maximum number of retry attempts (0 for no retries)
+//
+// Returns the new ETag and any error.
+func SaveSymlinksFileWithRetry(
+	cloud StorageBackend,
+	dirKey string,
+	symlinksFileName string,
+	data *SymlinksFileData,
+	expectedETag string,
+	mergeFn SymlinksMergeFunc,
+	maxRetries int,
+) (string, error) {
+	const (
+		initialBackoff = 50 * time.Millisecond
+		maxBackoff     = 2 * time.Second
+		backoffFactor  = 2.0
+	)
+
+	currentData := data
+	currentETag := expectedETag
+	backoff := initialBackoff
+
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		// Try to save
+		newETag, err := SaveSymlinksFile(cloud, dirKey, symlinksFileName, currentData, currentETag)
+		if err == nil {
+			return newETag, nil
+		}
+
+		// If not a precondition failure, return the error immediately
+		if !isPreconditionFailed(err) {
+			return "", err
+		}
+
+		// Precondition failed - conflict detected
+		if attempt >= maxRetries {
+			return "", fmt.Errorf("symlinks file conflict: max retries (%d) exceeded: %w", maxRetries, err)
+		}
+
+		// Wait with exponential backoff before retrying
+		time.Sleep(backoff)
+		backoff = time.Duration(float64(backoff) * backoffFactor)
+		if backoff > maxBackoff {
+			backoff = maxBackoff
+		}
+
+		// Re-read the current state from cloud storage
+		cloudData, cloudETag, loadErr := LoadSymlinksFile(cloud, dirKey, symlinksFileName)
+		if loadErr != nil {
+			// If file was deleted, treat as empty
+			if isNotExist(loadErr) {
+				cloudData = NewSymlinksFileData()
+				cloudETag = ""
+			} else {
+				return "", fmt.Errorf("failed to reload symlinks file during retry: %w", loadErr)
+			}
+		}
+
+		// Call merge function to combine our changes with the cloud state
+		mergedData, mergeErr := mergeFn(cloudData)
+		if mergeErr != nil {
+			return "", fmt.Errorf("merge function failed: %w", mergeErr)
+		}
+
+		// Update for next attempt
+		currentData = mergedData
+		currentETag = cloudETag
+	}
+
+	// Should not reach here
+	return "", fmt.Errorf("symlinks file save failed unexpectedly")
 }
 
 // DeleteSymlinksFile removes the .symlinks file from cloud storage
@@ -218,9 +329,14 @@ func isNotExist(err error) bool {
 	if err == nil {
 		return false
 	}
+	// Check for syscall error
+	if err == syscall.ENOENT {
+		return true
+	}
 	errStr := err.Error()
 	return strings.Contains(errStr, "NoSuchKey") ||
 		strings.Contains(errStr, "NotFound") ||
 		strings.Contains(errStr, "404") ||
-		strings.Contains(errStr, "does not exist")
+		strings.Contains(errStr, "does not exist") ||
+		strings.Contains(errStr, "no such file or directory")
 }
