@@ -578,7 +578,8 @@ MISC OPTIONS:
 		cli.BoolFlag{
 			Name:  "enable-symlinks-file",
 			Usage: "Store symlinks in a hidden .symlinks file per directory instead of object metadata." +
-				" Useful for S3 backends that don't return UserMetadata in listings (e.g., AWS S3).",
+				" Only supported with S3-compatible backends (AWS S3, MinIO, GCS)." +
+				" Useful for S3 backends that don't return UserMetadata in listings.",
 		},
 
 		cli.StringFlag{
