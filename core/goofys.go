@@ -323,6 +323,11 @@ func newGoofys(ctx context.Context, bucket string, flags *cfg.FlagStorage,
 		return nil, fmt.Errorf("Unable to setup backend: %v", err)
 	}
 
+	// Validate that symlinks file feature is only used with S3-compatible backends
+	if flags.EnableSymlinksFile && !cloud.Capabilities().IsS3Compatible() {
+		return nil, fmt.Errorf("--enable-symlinks-file is only supported with S3-compatible backends (s3, gcs, minio). Current backend: %v", cloud.Capabilities().Name)
+	}
+
 	randomObjectName := prefix + (RandStringBytesMaskImprSrc(32))
 	err = cloud.Init(randomObjectName)
 	if err != nil {

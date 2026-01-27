@@ -32,6 +32,12 @@ type Capabilities struct {
 	Name    string
 }
 
+// IsS3Compatible returns true if the backend is S3-compatible (supports conditional writes).
+// This includes AWS S3, MinIO, GCS (via S3 API), and other S3-compatible storage services.
+func (c *Capabilities) IsS3Compatible() bool {
+	return c.Name == "s3" || c.Name == "gcs"
+}
+
 type HeadBlobInput struct {
 	Key string
 }
