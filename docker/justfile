@@ -1,0 +1,145 @@
+# GeeseFS Docker Test Runner
+# Usage: just <recipe>
+
+# Default recipe - show help
+default:
+    @just --list
+
+# Build all Docker images
+build:
+    docker compose build
+
+# Start all services (MinIO + GeeseFS containers)
+up:
+    docker compose up -d
+
+# Stop all services
+down:
+    docker compose down
+
+# Stop all services and remove volumes
+clean:
+    docker compose down -v
+
+# View logs from GeeseFS containers
+logs:
+    docker compose logs -f geesefs-1 geesefs-2
+
+# View logs from MinIO
+logs-minio:
+    docker compose logs -f minio
+
+# Run all tests
+test: up
+    @echo "Running all tests..."
+    @just test-conditional
+    @just test-symlinks
+    @echo "All tests completed!"
+
+# Run S3 conditional write tests (If-Match/If-None-Match)
+test-conditional: up
+    @echo "Running conditional write tests..."
+    docker compose run --rm conditional-write-test
+
+# Run symlinks file tests
+test-symlinks: up
+    @echo "Running symlinks file tests..."
+    docker compose run --rm symlinks-test
+
+# Run GeeseFS conditional tests via FUSE mount
+test-geesefs-conditional: up
+    @echo "Running GeeseFS conditional tests..."
+    @chmod +x test_geesefs_conditional.sh
+    ./test_geesefs_conditional.sh
+
+# Check health of all services
+health:
+    @echo "Checking service health..."
+    @docker compose ps
+    @echo ""
+    @echo "Mount status:"
+    @docker exec geesefs-mount-1 mountpoint -q /mnt/s3 && echo "  geesefs-1: mounted" || echo "  geesefs-1: NOT mounted"
+    @docker exec geesefs-mount-2 mountpoint -q /mnt/s3 && echo "  geesefs-2: mounted" || echo "  geesefs-2: NOT mounted"
+
+# Open MinIO console in browser
+console:
+    open http://localhost:9001
+
+# List bucket contents via MinIO client
+ls:
+    docker exec geesefs-minio mc ls myminio/testbucket/
+
+# List bucket contents recursively
+ls-recursive:
+    docker exec geesefs-minio mc ls --recursive myminio/testbucket/
+
+# Show .symlinks files in bucket
+ls-symlinks:
+    @echo "Looking for .symlinks files..."
+    docker exec geesefs-minio mc find myminio/testbucket --name ".symlinks" --print || echo "No .symlinks files found"
+
+# Cat a .symlinks file (usage: just cat-symlinks [path])
+cat-symlinks path="":
+    @if [ -z "{{path}}" ]; then \
+        docker exec geesefs-minio mc cat myminio/testbucket/.symlinks 2>/dev/null || echo "No .symlinks file in root"; \
+    else \
+        docker exec geesefs-minio mc cat myminio/testbucket/{{path}}/.symlinks 2>/dev/null || echo "No .symlinks file in {{path}}"; \
+    fi
+
+# Create a test file from container 1
+write-test:
+    docker exec geesefs-mount-1 sh -c 'echo "Hello from container 1" > /mnt/s3/test-file.txt'
+    @echo "Created test-file.txt"
+
+# Read test file from container 2
+read-test:
+    docker exec geesefs-mount-2 cat /mnt/s3/test-file.txt
+
+# Create a symlink test
+create-symlink:
+    docker exec geesefs-mount-1 sh -c 'echo "Target content" > /mnt/s3/target.txt'
+    docker exec geesefs-mount-1 ln -sf target.txt /mnt/s3/link.txt
+    @echo "Created symlink: link.txt -> target.txt"
+
+# Read symlink from container 2
+read-symlink:
+    @echo "Symlink target:"
+    docker exec geesefs-mount-2 readlink /mnt/s3/link.txt
+    @echo "Symlink content:"
+    docker exec geesefs-mount-2 cat /mnt/s3/link.txt
+
+# Shell into container 1
+shell-1:
+    docker exec -it geesefs-mount-1 sh
+
+# Shell into container 2
+shell-2:
+    docker exec -it geesefs-mount-2 sh
+
+# Shell into MinIO container
+shell-minio:
+    docker exec -it geesefs-minio sh
+
+# Restart GeeseFS containers (useful after code changes)
+restart:
+    docker compose restart geesefs-1 geesefs-2
+
+# Rebuild and restart GeeseFS containers
+rebuild:
+    docker compose build geesefs-1 geesefs-2
+    docker compose up -d geesefs-1 geesefs-2
+
+# Rebuild containers from scratch and clean volumes
+rebuild-clean: clean
+    docker compose build --no-cache geesefs-1 geesefs-2
+    docker compose up -d
+    @echo "Rebuild complete with clean volumes"
+
+# Clean test files from bucket
+clean-test-files:
+    docker exec geesefs-mount-1 sh -c 'rm -rf /mnt/s3/test-* /mnt/s3/testdir 2>/dev/null || true'
+    @echo "Cleaned test files"
+
+# Full rebuild from scratch
+full-rebuild: clean build up
+    @echo "Full rebuild complete"
