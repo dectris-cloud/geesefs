@@ -32,6 +32,12 @@ type Capabilities struct {
 	Name    string
 }
 
+// IsS3Compatible returns true if the backend is S3-compatible (supports conditional writes).
+// This includes AWS S3, MinIO, GCS (via S3 API), and other S3-compatible storage services.
+func (c *Capabilities) IsS3Compatible() bool {
+	return c.Name == "s3" || c.Name == "gcs"
+}
+
 type HeadBlobInput struct {
 	Key string
 }
@@ -116,10 +122,11 @@ type CopyBlobOutput struct {
 }
 
 type GetBlobInput struct {
-	Key     string
-	Start   uint64
-	Count   uint64
-	IfMatch *string
+	Key         string
+	Start       uint64
+	Count       uint64
+	IfMatch     *string
+	IfNoneMatch *string // For conditional GET - returns 304 if ETag matches
 }
 
 type GetBlobOutput struct {
@@ -138,6 +145,13 @@ type PutBlobInput struct {
 
 	Body io.ReadSeeker
 	Size *uint64
+
+	// IfMatch specifies an ETag; the request succeeds only if the object's ETag matches.
+	// Used for optimistic locking / conditional updates.
+	IfMatch *string
+	// IfNoneMatch specifies that the request should succeed only if the object does not exist.
+	// Set to "*" to prevent overwriting an existing object.
+	IfNoneMatch *string
 }
 
 type PutBlobOutput struct {
