@@ -158,6 +158,68 @@ func LoadSymlinksFile(cloud StorageBackend, dirKey string, symlinksFileName stri
 	return parsed, etag, nil
 }
 
+// LoadSymlinksFileConditional loads the .symlinks file only if it has changed (different ETag).
+// If cachedETag matches the current file's ETag, returns (nil, cachedETag, nil) to indicate no change.
+// If the file has changed or cachedETag is empty, returns the new data and ETag.
+// Returns the parsed data (nil if unchanged), the current ETag, and any error.
+func LoadSymlinksFileConditional(cloud StorageBackend, dirKey string, symlinksFileName string, cachedETag string) (*SymlinksFileData, string, error) {
+	key := getSymlinksFilePath(dirKey, symlinksFileName)
+
+	input := &GetBlobInput{
+		Key:   key,
+		Start: 0,
+		Count: 0, // Read entire file
+	}
+
+	// If we have a cached ETag, use conditional GET
+	if cachedETag != "" {
+		input.IfNoneMatch = &cachedETag
+	}
+
+	resp, err := cloud.GetBlob(input)
+	if err != nil {
+		// Check for 304 Not Modified
+		if isNotModified(err) {
+			return nil, cachedETag, nil // No change, return nil data
+		}
+		// If file doesn't exist, return empty data
+		if isNotExist(err) {
+			return NewSymlinksFileData(), "", nil
+		}
+		return nil, "", err
+	}
+	defer resp.Body.Close()
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, "", err
+	}
+
+	parsed, err := ParseSymlinksFile(data)
+	if err != nil {
+		return nil, "", err
+	}
+
+	etag := ""
+	if resp.ETag != nil {
+		etag = *resp.ETag
+	}
+
+	return parsed, etag, nil
+}
+
+// isNotModified checks if an error indicates a 304 Not Modified response
+func isNotModified(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := err.Error()
+	return strings.Contains(errStr, "304") ||
+		strings.Contains(errStr, "NotModified") ||
+		strings.Contains(errStr, "Not Modified")
+}
+
+
 // SaveSymlinksFile saves the .symlinks file to cloud storage with conditional write
 // If expectedETag is non-empty, uses conditional PUT to avoid race conditions
 // Returns the new ETag and any error
