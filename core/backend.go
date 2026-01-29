@@ -122,10 +122,11 @@ type CopyBlobOutput struct {
 }
 
 type GetBlobInput struct {
-	Key     string
-	Start   uint64
-	Count   uint64
-	IfMatch *string
+	Key         string
+	Start       uint64
+	Count       uint64
+	IfMatch     *string
+	IfNoneMatch *string // For conditional GET - returns 304 if ETag matches
 }
 
 type GetBlobOutput struct {

@@ -62,9 +62,9 @@ type DirInodeData struct {
 	handles         []*DirHandle
 
 	// Symlinks file cache (used when EnableSymlinksFile is true)
-	symlinksCache     *SymlinksFileData
-	symlinksCacheETag string
-	symlinksCacheTime time.Time
+	symlinksCache          *SymlinksFileData
+	symlinksCacheETag      string
+	symlinksCacheTime      time.Time
 }
 
 // Returns the position of first char < '/' in `inp` after prefixLen + any continued '/' characters.
@@ -1166,6 +1166,13 @@ func (parent *Inode) Unlink(name string) (err error) {
 					s3Log.Warnf("Failed to update symlinks file for unlink %v: %v", name, err)
 					// Continue anyway, the symlink entry will be orphaned but the file will be deleted
 				}
+				// Virtual symlink: just remove from cache, no S3 object to delete
+				inode.mu.Lock()
+				inode.resetCache()
+				inode.SetCacheState(ST_DEAD)
+				parent.removeChildUnlocked(inode)
+				inode.mu.Unlock()
+				return nil
 			}
 		}
 
@@ -1428,7 +1435,6 @@ func (parent *Inode) CreateSymlink(
 		if err := parent.updateSymlinksFile(name, target, false); err != nil {
 			return nil, err
 		}
-		// Don't mark metadata as dirty since we're using the symlinks file
 		inode.userMetadataDirty = 0
 	} else {
 		inode.userMetadataDirty = 2
@@ -1448,8 +1454,13 @@ func (parent *Inode) CreateSymlink(
 	inode.Ref()
 	// another ref is for being in Children
 	fs.insertInode(parent, inode)
-	inode.SetCacheState(ST_CREATED)
-	fs.WakeupFlusher()
+	// If using symlinks file, symlink is purely virtual (no S3 object)
+	if fs.flags.EnableSymlinksFile {
+		inode.SetCacheState(ST_CACHED)
+	} else {
+		inode.SetCacheState(ST_CREATED)
+		fs.WakeupFlusher()
+	}
 
 	parent.touch()
 
@@ -1512,12 +1523,6 @@ func (parent *Inode) loadSymlinksCache() error {
 		return nil
 	}
 
-	// Check if cache is still valid (within stat-cache-ttl)
-	if parent.dir.symlinksCache != nil &&
-		time.Since(parent.dir.symlinksCacheTime) < parent.fs.flags.StatCacheTTL {
-		return nil
-	}
-
 	cloud, dirKey := parent.cloud()
 	if cloud == nil {
 		return syscall.ESTALE
@@ -1526,10 +1531,22 @@ func (parent *Inode) loadSymlinksCache() error {
 	dirKey = strings.TrimSuffix(dirKey, "/")
 	symlinksFileName := parent.fs.flags.SymlinksFile
 
-	data, etag, err := LoadSymlinksFile(cloud, dirKey, symlinksFileName)
+	// Use conditional GET with cached ETag to check if file has changed
+	cachedETag := parent.dir.symlinksCacheETag
+	data, etag, err := LoadSymlinksFileConditional(cloud, dirKey, symlinksFileName, cachedETag)
 	if err != nil {
 		return err
 	}
+
+	// If data is nil, the file hasn't changed (304 Not Modified)
+	if data == nil {
+		s3Log.Debugf("loadSymlinksCache: file unchanged (304), dir=%v", parent.FullName())
+		return nil
+	}
+
+	s3Log.Debugf("loadSymlinksCache: loaded dir=%v, dataEmpty=%v, etag=%q, cachedEmpty=%v",
+		parent.FullName(), data.IsEmpty(), etag,
+		parent.dir.symlinksCache == nil || parent.dir.symlinksCache.IsEmpty())
 
 	parent.dir.symlinksCache = data
 	parent.dir.symlinksCacheETag = etag
@@ -2166,6 +2183,13 @@ func (parent *Inode) LookUp(name string, doSlurp bool) (*Inode, error) {
 		prefixLen++
 	}
 	parent.mu.Lock()
+	// Load symlinks cache before inserting the inode
+	if parent.fs.flags.EnableSymlinksFile {
+		if err := parent.loadSymlinksCache(); err != nil {
+			s3Log.Warnf("Failed to load symlinks cache for %v: %v", parent.FullName(), err)
+			// Continue anyway, symlinks just won't work
+		}
+	}
 	skipListing := parent.fs.completeInflightListing(myList)
 	if skipListing == nil || !skipListing[*blob.Key] {
 		parent.insertSubTree((*blob.Key)[prefixLen:], blob, dirs)

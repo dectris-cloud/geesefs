@@ -930,6 +930,10 @@ func (s *S3Backend) GetBlob(param *GetBlobInput) (*GetBlobOutput, error) {
 		get.IfMatch = param.IfMatch
 	}
 
+	if param.IfNoneMatch != nil {
+		get.IfNoneMatch = param.IfNoneMatch
+	}
+
 	req, resp := s.GetObjectRequest(&get)
 	err := req.Send()
 	if err != nil {
