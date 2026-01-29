@@ -503,6 +503,35 @@ func (dh *DirHandle) handleListResult(resp *ListBlobsOutput, prefix string, skip
 			dh.inode.dir.lastFromCloud = &baseName
 		}
 	}
+
+	// Create virtual symlink inodes from symlinks cache (for symlinks not backed by S3 objects)
+	if fs.flags.EnableSymlinksFile && parent.dir.symlinksCache != nil {
+		now := time.Now()
+		for name, entry := range parent.dir.symlinksCache.Symlinks {
+			// Skip if inode already exists (from S3 listing or previous creation)
+			if parent.findChildUnlocked(name) != nil {
+				continue
+			}
+			// Skip if deleted
+			if _, deleted := parent.dir.DeletedChildren[name]; deleted {
+				continue
+			}
+			// Create virtual symlink inode
+			inode := NewInode(fs, parent, name)
+			inode.userMetadata = make(map[string][]byte)
+			inode.userMetadata[fs.flags.SymlinkAttr] = []byte(entry.Target)
+			inode.Attributes = InodeAttributes{
+				Size:  0,
+				Mtime: time.Unix(entry.Mtime, 0),
+				Ctime: now,
+				Uid:   fs.flags.Uid,
+				Gid:   fs.flags.Gid,
+				Mode:  fs.flags.FileMode,
+			}
+			fs.insertInode(parent, inode)
+			inode.SetCacheState(ST_CACHED)
+		}
+	}
 }
 
 func maxName(resp *ListBlobsOutput, itemPos, prefixPos int) (string, int) {
@@ -812,6 +841,35 @@ func (parent *Inode) removeExpired(from string) {
 		childTmp := parent.dir.Children[i]
 		if parent.dir.lastFromCloud != nil && childTmp.Name >= *parent.dir.lastFromCloud {
 			break
+		}
+		// For virtual symlinks (stored in .geesefs_symlinks file, not as S3 objects),
+		// check if they still exist in the symlinks cache
+		if parent.fs.flags.EnableSymlinksFile {
+			childTmp.mu.Lock()
+			isVirtualSymlink := childTmp.userMetadata != nil && childTmp.userMetadata[parent.fs.flags.SymlinkAttr] != nil
+			childTmp.mu.Unlock()
+			if isVirtualSymlink {
+				// Check if symlink still exists in cache (cache was refreshed in loadListing)
+				if parent.dir.symlinksCache != nil {
+					if _, exists := parent.dir.symlinksCache.Symlinks[childTmp.Name]; exists {
+						// Symlink still exists in cache, keep it
+						continue
+					}
+				}
+				// Symlink not in cache anymore, remove it
+				childTmp.mu.Lock()
+				childTmp.resetCache()
+				childTmp.SetCacheState(ST_DEAD)
+				notifications = append(notifications, &fuseops.NotifyDelete{
+					Parent: parent.Id,
+					Child:  childTmp.Id,
+					Name:   childTmp.Name,
+				})
+				parent.removeChildUnlocked(childTmp)
+				childTmp.mu.Unlock()
+				i--
+				continue
+			}
 		}
 		if childTmp.AttrTime.Before(parent.dir.refreshStartTime) &&
 			atomic.LoadInt32(&childTmp.fileHandles) == 0 &&
@@ -2150,6 +2208,41 @@ func (parent *Inode) LookUp(name string, doSlurp bool) (*Inode, error) {
 		parent.mu.Unlock()
 		return inode, nil
 	}
+
+	// For virtual symlinks (EnableSymlinksFile), check symlinks cache before S3 lookup
+	// Virtual symlinks don't have S3 objects, so S3 lookup would fail
+	if parent.fs.flags.EnableSymlinksFile {
+		parent.mu.Lock()
+		if err := parent.loadSymlinksCache(); err != nil {
+			s3Log.Warnf("Failed to load symlinks cache for %v: %v", parent.FullName(), err)
+		}
+		// Check if the name is a virtual symlink
+		if target, ok := parent.getSymlinkTargetFromCache(name); ok {
+			// Check if inode already exists
+			inode := parent.findChildUnlocked(name)
+			if inode == nil {
+				// Create virtual symlink inode
+				inode = NewInode(parent.fs, parent, name)
+				inode.userMetadata = make(map[string][]byte)
+				inode.userMetadata[parent.fs.flags.SymlinkAttr] = []byte(target)
+				now := time.Now()
+				inode.Attributes = InodeAttributes{
+					Size:  0,
+					Mtime: now,
+					Ctime: now,
+					Uid:   parent.fs.flags.Uid,
+					Gid:   parent.fs.flags.Gid,
+					Mode:  parent.fs.flags.FileMode,
+				}
+				parent.fs.insertInode(parent, inode)
+				inode.SetCacheState(ST_CACHED)
+			}
+			parent.mu.Unlock()
+			return inode, nil
+		}
+		parent.mu.Unlock()
+	}
+
 	if doSlurp {
 		// 99% of time it's impractical to do 2 HEAD requests per file when looking it up
 		// So we first try to preload a whole batch of files starting with our key
