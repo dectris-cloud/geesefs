@@ -11,7 +11,7 @@ build:
 
 # Start all services (MinIO + GeeseFS containers)
 up:
-    docker compose up -d
+    docker compose up -d --build
 
 # Stop all services
 down:

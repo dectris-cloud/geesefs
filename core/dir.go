@@ -62,9 +62,9 @@ type DirInodeData struct {
 	handles         []*DirHandle
 
 	// Symlinks file cache (used when EnableSymlinksFile is true)
-	symlinksCache          *SymlinksFileData
-	symlinksCacheETag      string
-	symlinksCacheTime      time.Time
+	symlinksCache     *SymlinksFileData
+	symlinksCacheETag string
+	symlinksCacheTime time.Time
 }
 
 // Returns the position of first char < '/' in `inp` after prefixLen + any continued '/' characters.
@@ -504,34 +504,104 @@ func (dh *DirHandle) handleListResult(resp *ListBlobsOutput, prefix string, skip
 		}
 	}
 
-	// Create virtual symlink inodes from symlinks cache (for symlinks not backed by S3 objects)
-	if fs.flags.EnableSymlinksFile && parent.dir.symlinksCache != nil {
-		now := time.Now()
-		for name, entry := range parent.dir.symlinksCache.Symlinks {
-			// Skip if inode already exists (from S3 listing or previous creation)
-			if parent.findChildUnlocked(name) != nil {
-				continue
-			}
-			// Skip if deleted
-			if _, deleted := parent.dir.DeletedChildren[name]; deleted {
-				continue
-			}
-			// Create virtual symlink inode
-			inode := NewInode(fs, parent, name)
-			inode.userMetadata = make(map[string][]byte)
-			inode.userMetadata[fs.flags.SymlinkAttr] = []byte(entry.Target)
-			inode.Attributes = InodeAttributes{
-				Size:  0,
-				Mtime: time.Unix(entry.Mtime, 0),
-				Ctime: now,
-				Uid:   fs.flags.Uid,
-				Gid:   fs.flags.Gid,
-				Mode:  fs.flags.FileMode,
-			}
-			fs.insertInode(parent, inode)
-			inode.SetCacheState(ST_CACHED)
-		}
+	// Create virtual symlink inodes from symlinks cache
+	parent.refreshVirtualSymlinksLocked()
+}
+
+// createVirtualSymlinksFromCache creates virtual symlink inodes from the symlinks cache
+// for symlinks that are not backed by S3 objects.
+// LOCKS_REQUIRED(parent.mu)
+func (parent *Inode) createVirtualSymlinksFromCache() {
+	fs := parent.fs
+	if !fs.flags.EnableSymlinksFile || parent.dir == nil || parent.dir.symlinksCache == nil {
+		return
 	}
+
+	now := time.Now()
+	for name, entry := range parent.dir.symlinksCache.Symlinks {
+		// Skip if inode already exists (from S3 listing or previous creation)
+		if parent.findChildUnlocked(name) != nil {
+			continue
+		}
+		// Skip if deleted
+		if _, deleted := parent.dir.DeletedChildren[name]; deleted {
+			continue
+		}
+		// Create virtual symlink inode
+		inode := NewInode(fs, parent, name)
+		inode.userMetadata = make(map[string][]byte)
+		inode.userMetadata[fs.flags.SymlinkAttr] = []byte(entry.Target)
+		inode.Attributes = InodeAttributes{
+			Size:  0,
+			Mtime: time.Unix(entry.Mtime, 0),
+			Ctime: now,
+			Uid:   fs.flags.Uid,
+			Gid:   fs.flags.Gid,
+			Mode:  fs.flags.FileMode,
+		}
+		fs.insertInode(parent, inode)
+		inode.SetCacheState(ST_CACHED)
+	}
+}
+
+// refreshVirtualSymlinksLocked reloads the symlinks cache (conditional GET) and keeps
+// the virtual symlink inodes in sync with the cache state.
+// LOCKS_REQUIRED(parent.mu)
+func (parent *Inode) refreshVirtualSymlinksLocked() {
+	fs := parent.fs
+	if !fs.flags.EnableSymlinksFile || parent.dir == nil {
+		return
+	}
+
+	if err := parent.loadSymlinksCache(); err != nil {
+		s3Log.Warnf("Failed to load symlinks cache for %v: %v", parent.FullName(), err)
+		return
+	}
+
+	parent.syncVirtualSymlinksFromCache()
+}
+
+// syncVirtualSymlinksFromCache removes stale virtual symlinks and adds new ones
+// from the symlinks cache without waiting for directory TTL to expire.
+// LOCKS_REQUIRED(parent.mu)
+func (parent *Inode) syncVirtualSymlinksFromCache() {
+	fs := parent.fs
+	if !fs.flags.EnableSymlinksFile || parent.dir == nil || parent.dir.symlinksCache == nil {
+		return
+	}
+
+	var notifications []interface{}
+	for i := 0; i < len(parent.dir.Children); i++ {
+		child := parent.dir.Children[i]
+		child.mu.Lock()
+		isVirtual := child.userMetadata != nil && child.userMetadata[fs.flags.SymlinkAttr] != nil &&
+			atomic.LoadInt32(&child.CacheState) == ST_CACHED
+		child.mu.Unlock()
+		if !isVirtual {
+			continue
+		}
+		if _, exists := parent.dir.symlinksCache.Symlinks[child.Name]; exists {
+			continue
+		}
+
+		child.mu.Lock()
+		child.resetCache()
+		child.SetCacheState(ST_DEAD)
+		notifications = append(notifications, &fuseops.NotifyDelete{
+			Parent: parent.Id,
+			Child:  child.Id,
+			Name:   child.Name,
+		})
+		parent.removeChildUnlocked(child)
+		child.mu.Unlock()
+		i--
+	}
+
+	if len(notifications) > 0 && fs.NotifyCallback != nil {
+		fs.NotifyCallback(notifications)
+	}
+
+	parent.createVirtualSymlinksFromCache()
 }
 
 func maxName(resp *ListBlobsOutput, itemPos, prefixPos int) (string, int) {
@@ -719,6 +789,8 @@ func (dh *DirHandle) loadListing() error {
 			s3Log.Warnf("Failed to load symlinks cache for %v: %v", parent.FullName(), err)
 			// Continue anyway, symlinks just won't work
 		}
+		// Always create virtual symlinks from cache (even if listing is cached)
+		parent.createVirtualSymlinksFromCache()
 	}
 
 	if !parent.dir.listDone && parent.dir.listMarker == "" {
@@ -920,7 +992,14 @@ func (dh *DirHandle) ReadDir() (inode *Inode, err error) {
 		}
 	}
 
-	if expired(dh.inode.dir.DirTime, dh.inode.fs.flags.StatCacheTTL) {
+	expires := expired(dh.inode.dir.DirTime, dh.inode.fs.flags.StatCacheTTL)
+	if !expires && parent.fs.flags.EnableSymlinksFile {
+		parent.refreshVirtualSymlinksLocked()
+		// refreshVirtualSymlinksLocked may add/remove children, recheck position
+		dh.checkDirPosition()
+	}
+
+	if expires {
 		err = dh.loadListing()
 		if err != nil {
 			return nil, err
@@ -929,7 +1008,7 @@ func (dh *DirHandle) ReadDir() (inode *Inode, err error) {
 		dh.checkDirPosition()
 	}
 
-	if dh.lastInternalOffset-2 >= len(dh.inode.dir.Children) {
+	if dh.lastInternalOffset < 2 || dh.lastInternalOffset-2 >= len(dh.inode.dir.Children) {
 		// we've reached the end
 		parent.dir.listDone = false
 		if parent.dir.forgetDuringList {
@@ -2205,6 +2284,30 @@ func (parent *Inode) LookUp(name string, doSlurp bool) (*Inode, error) {
 	if loaded {
 		parent.mu.Lock()
 		inode := parent.findChildUnlocked(name)
+		// For virtual symlinks, check symlinks cache if inode not found
+		// Virtual symlinks from other mounts may not be in our directory cache yet
+		if inode == nil && parent.fs.flags.EnableSymlinksFile {
+			if err := parent.loadSymlinksCache(); err != nil {
+				s3Log.Warnf("Failed to load symlinks cache for %v: %v", parent.FullName(), err)
+			}
+			if target, ok := parent.getSymlinkTargetFromCache(name); ok {
+				// Create virtual symlink inode
+				inode = NewInode(parent.fs, parent, name)
+				inode.userMetadata = make(map[string][]byte)
+				inode.userMetadata[parent.fs.flags.SymlinkAttr] = []byte(target)
+				now := time.Now()
+				inode.Attributes = InodeAttributes{
+					Size:  0,
+					Mtime: now,
+					Ctime: now,
+					Uid:   parent.fs.flags.Uid,
+					Gid:   parent.fs.flags.Gid,
+					Mode:  parent.fs.flags.FileMode,
+				}
+				parent.fs.insertInode(parent, inode)
+				inode.SetCacheState(ST_CACHED)
+			}
+		}
 		parent.mu.Unlock()
 		return inode, nil
 	}
