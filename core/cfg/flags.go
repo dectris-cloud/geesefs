@@ -571,6 +571,11 @@ MISC OPTIONS:
 			Usage: "Name of the hidden file storing symlinks metadata when --enable-symlinks-file is used.",
 		},
 
+		cli.BoolTFlag{
+			Name:  "hide-symlinks-file",
+			Usage: "Hide the .symlinks file from directory listings. Set to false to show it. (default: true)",
+		},
+
 		cli.StringFlag{
 			Name:  "refresh-attr",
 			Value: ".invalidate",
@@ -874,6 +879,7 @@ func PopulateFlags(c *cli.Context) (ret *FlagStorage) {
 		MtimeAttr:           c.String("mtime-attr"),
 		SymlinksFile:        c.String("symlinks-file"),
 		EnableSymlinksFile:  c.Bool("enable-symlinks-file"),
+		HideSymlinksFile:    c.Bool("hide-symlinks-file"),
 		RefreshAttr:         c.String("refresh-attr"),
 		CachePath:           c.String("cache"),
 		MaxDiskCacheFD:      int64(c.Int("max-disk-cache-fd")),

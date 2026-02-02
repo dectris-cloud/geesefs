@@ -56,8 +56,13 @@ setup_test_folder() {
     run_in $MOUNT2 rm -rf "$TEST_DIR" 2>/dev/null || true
     sleep 1
     run_in $MOUNT1 mkdir -p "$TEST_DIR"
+    if ! run_in $MOUNT1 test -d "$TEST_DIR"; then
+        log_fail "Failed to create test directory $TEST_DIR"
+        return 1
+    fi
     run_in $MOUNT1 sync
     sleep 1
+    # Verify directory is accessible
     run_in $MOUNT1 ls -la "$TEST_DIR" >/dev/null 2>&1 || true
     run_in $MOUNT2 ls -la "$MOUNT_PATH" >/dev/null 2>&1 || true
     sleep 1
@@ -120,9 +125,20 @@ log_info "Creating target file..."
 run_in $MOUNT1 sh -c "echo 'Hello from target' > $TEST_DIR/target.txt"
 sync_and_wait
 
+# Debug: Verify target file was created
+if ! run_in $MOUNT1 test -f $TEST_DIR/target.txt; then
+    log_fail "Target file was not created"
+fi
+
 log_info "Creating symlink in container 1..."
 run_in $MOUNT1 ln -sf target.txt $TEST_DIR/link.txt
+SYMLINK_RC=$?
+log_info "ln -sf exit code: $SYMLINK_RC"
 sync_and_wait
+
+# Debug: Show directory contents after symlink creation
+log_info "Debug: Directory contents after symlink creation:"
+run_in $MOUNT1 ls -la $TEST_DIR/ 2>&1 | sed 's/^/    /'
 
 log_info "Verifying symlink in container 1..."
 CONTENT=$(run_in $MOUNT1 cat $TEST_DIR/link.txt 2>/dev/null || echo "FAILED")
@@ -180,7 +196,19 @@ fi
 
 log_info "Waiting for cache refresh..."
 sleep 5
-run_in $MOUNT2 ls -la $TEST_DIR/ >/dev/null 2>&1 || true
+
+# Debug: Check .geesefs_symlinks file via S3 before checking container 2
+log_info "Debug: Checking .geesefs_symlinks via S3 API..."
+SYMLINKS_S3=$(get_symlinks_file_s3 "test2")
+if [ -n "$SYMLINKS_S3" ]; then
+    log_info "S3 symlinks file content:"
+    echo "$SYMLINKS_S3" | sed 's/^/    /'
+else
+    log_info "Warning: .geesefs_symlinks not found in S3!"
+fi
+
+log_info "Debug: Container 2 directory listing before access:"
+run_in $MOUNT2 ls -la $TEST_DIR/ 2>&1 | sed 's/^/    /'
 sleep 2
 
 log_info "Checking symlink visibility in container 2..."
@@ -366,7 +394,7 @@ fi
 cleanup_test_folder 5
 
 # ==============================================================================
-log_header "TEST 6: .geesefs_symlinks file visibility"
+log_header "TEST 6: .geesefs_symlinks file is hidden by default"
 # ==============================================================================
 
 setup_test_folder 6
@@ -376,16 +404,23 @@ run_in $MOUNT1 sh -c "echo 'Visibility test' > $TEST_DIR/target.txt"
 run_in $MOUNT1 ln -sf target.txt $TEST_DIR/link.txt
 sync_and_wait
 
-log_info "Listing directory contents..."
+log_info "Listing directory contents (expecting .geesefs_symlinks to be hidden)..."
 DIR_LISTING=$(run_in $MOUNT1 ls -la $TEST_DIR/)
 echo "  Directory listing:"
 echo "$DIR_LISTING" | sed 's/^/    /'
 
 if echo "$DIR_LISTING" | grep -q "\.geesefs_symlinks"; then
-    log_info "Note: .geesefs_symlinks is visible in listing"
-    log_pass ".geesefs_symlinks file exists (visibility is implementation-dependent)"
+    log_fail ".geesefs_symlinks file is visible but should be hidden by default"
 else
-    log_pass ".geesefs_symlinks file is hidden from listing"
+    log_pass ".geesefs_symlinks file is hidden from listing (--hide-symlinks-file=true by default)"
+fi
+
+log_info "Verifying .geesefs_symlinks exists via S3 API (bypassing FUSE)..."
+SYMLINKS_CONTENT=$(get_symlinks_file_s3 "test6")
+if [ -n "$SYMLINKS_CONTENT" ]; then
+    log_pass ".geesefs_symlinks file exists in S3 but is hidden from FUSE listing"
+else
+    log_fail ".geesefs_symlinks file not found in S3"
 fi
 
 cleanup_test_folder 6
