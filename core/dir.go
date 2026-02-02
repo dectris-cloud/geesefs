@@ -451,8 +451,8 @@ func (dh *DirHandle) handleListResult(resp *ListBlobsOutput, prefix string, skip
 			continue
 		}
 
-		// Skip the .symlinks file from listing results
-		if fs.flags.EnableSymlinksFile && baseName == fs.flags.SymlinksFile {
+		// Skip the .symlinks file from listing results if hidden
+		if fs.flags.EnableSymlinksFile && fs.flags.HideSymlinksFile && baseName == fs.flags.SymlinksFile {
 			continue
 		}
 

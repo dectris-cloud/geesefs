@@ -100,6 +100,7 @@ type FlagStorage struct {
 	SymlinkAttr         string
 	SymlinksFile        string // Name of the hidden file storing symlinks metadata
 	EnableSymlinksFile  bool   // Use .symlinks file instead of object metadata for symlinks
+	HideSymlinksFile    bool   // Hide the .symlinks file from directory listings
 	RefreshAttr         string
 	RefreshFilename     string
 	FlushFilename       string
