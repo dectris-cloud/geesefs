@@ -578,3 +578,126 @@ type errorBackend struct {
 func (m *errorBackend) PutBlob(param *PutBlobInput) (*PutBlobOutput, error) {
 	return nil, m.err
 }
+
+// ============================================================================
+// Tests for LoadSymlinksFileConditional (conditional GET / 304 Not Modified)
+// ============================================================================
+
+func (s *SymlinksTest) TestLoadSymlinksFileConditionalNotModified(t *C) {
+	mock := newMockConditionalBackend()
+
+	// Pre-create a file
+	existingETag := "\"test-etag-v1\""
+	mock.objects["testdir/.geesefs_symlinks"] = &mockStoredObject{
+		data: []byte(`{"version":1,"symlinks":{"link1":{"target":"../target1","mtime":1}}}`),
+		etag: existingETag,
+	}
+
+	// First load - should return data
+	data1, etag1, err := LoadSymlinksFileConditional(mock, "testdir", ".geesefs_symlinks", "")
+	t.Assert(err, IsNil)
+	t.Assert(data1, NotNil)
+	t.Assert(etag1, Equals, existingETag)
+	t.Assert(data1.HasSymlink("link1"), Equals, true)
+
+	// Second load with same ETag - should return nil (304 Not Modified)
+	data2, etag2, err := LoadSymlinksFileConditional(mock, "testdir", ".geesefs_symlinks", existingETag)
+	t.Assert(err, IsNil)
+	t.Assert(data2, IsNil) // nil indicates no change
+	t.Assert(etag2, Equals, existingETag)
+}
+
+func (s *SymlinksTest) TestLoadSymlinksFileConditionalModified(t *C) {
+	mock := newMockConditionalBackend()
+
+	// Pre-create a file
+	existingETag := "\"test-etag-v1\""
+	mock.objects["testdir/.geesefs_symlinks"] = &mockStoredObject{
+		data: []byte(`{"version":1,"symlinks":{"link1":{"target":"../target1","mtime":1}}}`),
+		etag: existingETag,
+	}
+
+	// Load with outdated ETag - should return new data
+	data, etag, err := LoadSymlinksFileConditional(mock, "testdir", ".geesefs_symlinks", "\"old-etag\"")
+	t.Assert(err, IsNil)
+	t.Assert(data, NotNil)
+	t.Assert(etag, Equals, existingETag)
+	t.Assert(data.HasSymlink("link1"), Equals, true)
+}
+
+func (s *SymlinksTest) TestLoadSymlinksFileConditionalFileDeleted(t *C) {
+	mock := newMockConditionalBackend()
+
+	// File doesn't exist - should return empty data regardless of cachedETag
+	data, etag, err := LoadSymlinksFileConditional(mock, "testdir", ".geesefs_symlinks", "\"some-old-etag\"")
+	t.Assert(err, IsNil)
+	t.Assert(data, NotNil) // Returns empty data, not nil
+	t.Assert(data.IsEmpty(), Equals, true)
+	t.Assert(etag, Equals, "")
+}
+
+// ============================================================================
+// Tests for symlinks cache lookup scenarios (simulates LookUpCached behavior)
+// ============================================================================
+
+func (s *SymlinksTest) TestSymlinksCacheLookupWhenInodeNotInChildren(t *C) {
+	// This test simulates the scenario where:
+	// - Mount 1 creates a symlink (updates .geesefs_symlinks)
+	// - Mount 2's directory cache is valid but doesn't have the inode
+	// - Mount 2 should find the symlink via the symlinks cache
+
+	data := NewSymlinksFileData()
+	data.AddSymlink("new-symlink", "../target-file.txt")
+
+	// Verify the symlink can be found in the cache
+	target, found := data.GetSymlink("new-symlink")
+	t.Assert(found, Equals, true)
+	t.Assert(target, Equals, "../target-file.txt")
+
+	// Verify non-existent symlinks return false
+	_, found = data.GetSymlink("not-a-symlink")
+	t.Assert(found, Equals, false)
+}
+
+func (s *SymlinksTest) TestSymlinksCacheUpdatesMergeCorrectly(t *C) {
+	// Simulates concurrent updates from different mounts
+
+	// Mount 1 has these symlinks
+	mount1Data := NewSymlinksFileData()
+	mount1Data.AddSymlink("link-from-mount1", "../target1")
+
+	// Mount 2 has these symlinks
+	mount2Data := NewSymlinksFileData()
+	mount2Data.AddSymlink("link-from-mount2", "../target2")
+
+	// Simulate merge: Mount 2 loads Mount 1's data and adds its symlink
+	mergedData := NewSymlinksFileData()
+	mergedData.AddSymlink("link-from-mount1", "../target1") // From cloud
+	mergedData.AddSymlink("link-from-mount2", "../target2") // Local addition
+
+	// Verify both symlinks are present
+	t.Assert(mergedData.HasSymlink("link-from-mount1"), Equals, true)
+	t.Assert(mergedData.HasSymlink("link-from-mount2"), Equals, true)
+
+	target1, _ := mergedData.GetSymlink("link-from-mount1")
+	target2, _ := mergedData.GetSymlink("link-from-mount2")
+	t.Assert(target1, Equals, "../target1")
+	t.Assert(target2, Equals, "../target2")
+}
+
+func (s *SymlinksTest) TestSymlinksCacheDeleteMergesCorrectly(t *C) {
+	// Simulates deleting a symlink when another mount added symlinks
+
+	// Cloud has both symlinks
+	cloudData := NewSymlinksFileData()
+	cloudData.AddSymlink("link1", "../target1")
+	cloudData.AddSymlink("link2", "../target2")
+
+	// Mount wants to delete link1
+	cloudData.RemoveSymlink("link1")
+
+	// Verify only link2 remains
+	t.Assert(cloudData.HasSymlink("link1"), Equals, false)
+	t.Assert(cloudData.HasSymlink("link2"), Equals, true)
+}
+

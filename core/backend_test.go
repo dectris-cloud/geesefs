@@ -281,6 +281,11 @@ func (m *mockConditionalBackend) GetBlob(param *GetBlobInput) (*GetBlobOutput, e
 		return nil, fmt.Errorf("PreconditionFailed: ETag mismatch for GetBlob")
 	}
 
+	// Check IfNoneMatch condition - return 304 Not Modified if ETag matches
+	if param.IfNoneMatch != nil && *param.IfNoneMatch == obj.etag {
+		return nil, fmt.Errorf("304 Not Modified")
+	}
+
 	return &GetBlobOutput{
 		HeadBlobOutput: HeadBlobOutput{
 			BlobItemOutput: BlobItemOutput{
