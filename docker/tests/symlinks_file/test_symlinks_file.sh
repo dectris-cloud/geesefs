@@ -8,8 +8,9 @@
 # Each test runs in its own isolated subfolder to prevent interference.
 #
 
-MOUNT1="geesefs-mount-1"
-MOUNT2="geesefs-mount-2"
+MOUNT1="symlinks-test-mount-1"
+MOUNT2="symlinks-test-mount-2"
+MINIO="symlinks-test-minio"
 MOUNT_PATH="/mnt/s3"
 SYMLINKS_FILE=".geesefs_symlinks"
 PASSED=0
@@ -96,7 +97,7 @@ get_symlinks_file_s3() {
     else
         key="${dir_prefix}/${SYMLINKS_FILE}"
     fi
-    docker exec geesefs-minio mc cat myminio/testbucket/"$key" 2>/dev/null || echo ""
+    docker exec $MINIO mc cat myminio/testbucket/"$key" 2>/dev/null || echo ""
 }
 
 sync_and_wait() {
@@ -123,7 +124,7 @@ fi
 echo "Both mounts are ready!"
 
 log_info "Setting up MinIO client..."
-docker exec geesefs-minio mc alias set myminio http://localhost:9000 minioadmin minioadmin >/dev/null 2>&1 || true
+docker exec $MINIO mc alias set myminio http://localhost:9000 minioadmin minioadmin >/dev/null 2>&1 || true
 
 # ==============================================================================
 log_header "TEST 1: Create symlink, verify .geesefs_symlinks file"

@@ -1,12 +1,15 @@
+# GeeseFS Symlinks File Test - Tests .geesefs_symlinks file cross-mount visibility
+# Usage: docker compose up --build
+
 services:
   # MinIO S3-compatible storage
   minio:
     image: minio/minio:latest
-    container_name: geesefs-minio
+    container_name: symlinks-test-minio
     command: server /data --console-address ":9001"
     ports:
-      - "9000:9000"   # S3 API
-      - "9001:9001"   # MinIO Console
+      - "9300:9000"
+      - "9301:9001"
     environment:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
@@ -18,12 +21,12 @@ services:
       timeout: 5s
       retries: 5
     networks:
-      - geesefs-network
+      - test-network
 
   # MinIO client to create bucket on startup
   minio-init:
     image: minio/mc:latest
-    container_name: geesefs-minio-init
+    container_name: symlinks-test-minio-init
     depends_on:
       minio:
         condition: service_healthy
@@ -36,14 +39,14 @@ services:
       exit 0;
       "
     networks:
-      - geesefs-network
+      - test-network
 
-  # GeeseFS container 1 - mounts the S3 bucket
+  # GeeseFS container 1
   geesefs-1:
     build:
-      context: ..
-      dockerfile: docker/Dockerfile.geesefs
-    container_name: geesefs-mount-1
+      context: ../../..
+      dockerfile: docker/tests/symlinks_file/Dockerfile.geesefs
+    container_name: symlinks-test-mount-1
     depends_on:
       minio-init:
         condition: service_completed_successfully
@@ -60,9 +63,9 @@ services:
       S3_ENDPOINT: http://minio:9000
       S3_BUCKET: testbucket
       MOUNT_POINT: /mnt/s3
-      GEESEFS_OPTS: "--debug_s3 --debug_fuse --enable-symlinks-file --stat-cache-ttl 1s"
+      GEESEFS_OPTS: "--debug_s3 --debug_fuse --enable-symlinks-file --stat-cache-ttl 3s"
     networks:
-      - geesefs-network
+      - test-network
     healthcheck:
       test: ["CMD", "mountpoint", "-q", "/mnt/s3"]
       interval: 10s
@@ -70,12 +73,12 @@ services:
       retries: 5
       start_period: 10s
 
-  # GeeseFS container 2 - mounts the same S3 bucket
+  # GeeseFS container 2
   geesefs-2:
     build:
-      context: ..
-      dockerfile: docker/Dockerfile.geesefs
-    container_name: geesefs-mount-2
+      context: ../../..
+      dockerfile: docker/tests/symlinks_file/Dockerfile.geesefs
+    container_name: symlinks-test-mount-2
     depends_on:
       minio-init:
         condition: service_completed_successfully
@@ -92,9 +95,9 @@ services:
       S3_ENDPOINT: http://minio:9000
       S3_BUCKET: testbucket
       MOUNT_POINT: /mnt/s3
-      GEESEFS_OPTS: "--debug_s3 --debug_fuse --enable-symlinks-file --stat-cache-ttl 1s"
+      GEESEFS_OPTS: "--debug_s3 --debug_fuse --enable-symlinks-file --stat-cache-ttl 3s"
     networks:
-      - geesefs-network
+      - test-network
     healthcheck:
       test: ["CMD", "mountpoint", "-q", "/mnt/s3"]
       interval: 10s
@@ -102,48 +105,10 @@ services:
       retries: 5
       start_period: 10s
 
-  # Test container for conditional write tests using S3 API directly
-  conditional-write-test:
-    build:
-      context: .
-      dockerfile: Dockerfile.test-conditional
-    container_name: geesefs-conditional-test
-    depends_on:
-      geesefs-1:
-        condition: service_healthy
-      geesefs-2:
-        condition: service_healthy
-    environment:
-      AWS_ACCESS_KEY_ID: minioadmin
-      AWS_SECRET_ACCESS_KEY: minioadmin
-      S3_ENDPOINT: http://minio:9000
-      S3_BUCKET: testbucket
-    networks:
-      - geesefs-network
-    command: ["python3", "/app/test_conditional_writes.py"]
-
-  # Test container that uses MinIO client to verify files
-  test-client:
-    image: minio/mc:latest
-    container_name: geesefs-test-client
-    depends_on:
-      geesefs-1:
-        condition: service_healthy
-    entrypoint: >
-      /bin/sh -c "
-      mc alias set myminio http://minio:9000 minioadmin minioadmin;
-      echo 'Listing bucket contents:';
-      mc ls myminio/testbucket;
-      echo 'Test completed!';
-      sleep infinity
-      "
-    networks:
-      - geesefs-network
-
-  # Test container for symlinks file tests
-  symlinks-test:
+  # Test runner container
+  test:
     image: docker:cli
-    container_name: geesefs-symlinks-test
+    container_name: symlinks-test-runner
     depends_on:
       geesefs-1:
         condition: service_healthy
@@ -151,15 +116,15 @@ services:
         condition: service_healthy
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ./test_symlinks_file.sh:/test_symlinks_file.sh:ro
+      - ./test_symlinks_file.sh:/test.sh:ro
     working_dir: /
-    command: ["sh", "/test_symlinks_file.sh"]
+    command: ["sh", "/test.sh"]
     networks:
-      - geesefs-network
+      - test-network
 
 volumes:
   minio-data:
 
 networks:
-  geesefs-network:
+  test-network:
     driver: bridge

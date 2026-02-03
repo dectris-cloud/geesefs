@@ -1,0 +1,28 @@
+# Conditional Writes Test Runner
+# Usage: just <recipe>
+
+# Default recipe - show help
+default:
+    @just --list
+
+# Run the test
+test:
+    docker compose up -d --build minio
+    docker compose run --rm minio-init
+    docker compose run --rm test
+    docker compose down
+
+# Run interactively
+run:
+    docker compose run --rm test
+
+# Clean up
+clean:
+    docker compose down -v --remove-orphans
+
+# View logs
+logs:
+    docker compose logs -f
+
+# Rebuild and run
+rebuild: clean test
