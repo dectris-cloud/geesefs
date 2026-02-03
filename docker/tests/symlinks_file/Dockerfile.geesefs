@@ -1,0 +1,57 @@
+# Dockerfile for running GeeseFS with FUSE support and symlinks file enabled
+FROM golang:1.25-alpine AS builder
+
+# Install required packages for building
+RUN apk add --no-cache git make bash
+
+# Set working directory
+WORKDIR /build
+
+# Copy go.mod and go.sum first for better caching
+COPY go.mod go.sum ./
+
+# Copy the s3ext module (local replace directive)
+COPY s3ext/ ./s3ext/
+
+# Download dependencies
+RUN go mod download
+
+# Copy the rest of the source code
+COPY . .
+
+# Set environment variables for static build
+ENV CGO_ENABLED=0
+ENV GOOS=linux
+
+# Build binary
+RUN go build -ldflags "-X main.Version=docker-build -s -w" -o geesefs .
+
+# Runtime stage with FUSE support
+FROM alpine:latest
+
+# Install FUSE and other runtime dependencies
+RUN apk add --no-cache \
+    fuse \
+    fuse-common \
+    ca-certificates \
+    tzdata \
+    bash \
+    netcat-openbsd
+
+# Copy the binary from builder
+COPY --from=builder /build/geesefs /geesefs
+
+# Create mount point directory
+RUN mkdir -p /mnt/s3
+
+# Create log directory
+RUN mkdir -p /var/log
+
+# Enable FUSE for non-root users
+RUN echo "user_allow_other" >> /etc/fuse.conf
+
+# Copy entrypoint script
+COPY docker/tests/symlinks_file/docker-entrypoint.sh /docker-entrypoint.sh
+RUN chmod +x /docker-entrypoint.sh
+
+ENTRYPOINT ["/docker-entrypoint.sh"]

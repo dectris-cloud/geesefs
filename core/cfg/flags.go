@@ -30,7 +30,7 @@ import (
 	"github.com/urfave/cli"
 )
 
-const GEESEFS_VERSION = "0.43.3"
+const GEESEFS_VERSION = "0.44.0"
 
 var flagCategories map[string]string
 
@@ -568,11 +568,22 @@ MISC OPTIONS:
 			Usage: "File modification time (UNIX time) metadata attribute name",
 		},
 
+		cli.BoolFlag{
+			Name:  "enable-symlinks-file",
+			Usage: "Store symlinks in a hidden .symlinks file per directory instead of object metadata." +
+				" Only supported with S3-compatible backends (AWS S3, MinIO, GCS)." +
+				" Useful for S3 backends that don't return UserMetadata in listings.",
+		},
+
 		cli.StringFlag{
-			Name:  "symlink-attr",
-			Value: "--symlink-target",
-			Usage: "Symbolic link target metadata attribute name." +
-				" Only works correctly if your S3 returns UserMetadata in listings",
+			Name:  "symlinks-file",
+			Value: ".geesefs_symlinks",
+			Usage: "Name of the hidden file storing symlinks metadata when --enable-symlinks-file is used.",
+		},
+
+		cli.BoolTFlag{
+			Name:  "hide-symlinks-file",
+			Usage: "Hide the .symlinks file from directory listings. Set to false to show it. (default: true)",
 		},
 
 		cli.StringFlag{
@@ -883,7 +894,9 @@ func PopulateFlags(c *cli.Context) (ret *FlagStorage) {
 		FileModeAttr:        c.String("mode-attr"),
 		RdevAttr:            c.String("rdev-attr"),
 		MtimeAttr:           c.String("mtime-attr"),
-		SymlinkAttr:         c.String("symlink-attr"),
+		SymlinksFile:        c.String("symlinks-file"),
+		EnableSymlinksFile:  c.Bool("enable-symlinks-file"),
+		HideSymlinksFile:    c.Bool("hide-symlinks-file"),
 		RefreshAttr:         c.String("refresh-attr"),
 		CachePath:           c.String("cache"),
 		MaxDiskCacheFD:      int64(c.Int("max-disk-cache-fd")),
@@ -1088,6 +1101,7 @@ func DefaultFlags() *FlagStorage {
 		RdevAttr:            "rdev",
 		MtimeAttr:           "mtime",
 		SymlinkAttr:         "--symlink-target",
+		SymlinksFile:        ".geesefs_symlinks",
 		RefreshAttr:         ".invalidate",
 		StatCacheTTL:        30 * time.Second,
 		HTTPTimeout:         30 * time.Second,

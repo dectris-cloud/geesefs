@@ -1,0 +1,133 @@
+# GeeseFS Docker Tests
+#
+# This folder contains Docker-based integration tests for GeeseFS.
+# Each test suite has its own subfolder with isolated docker-compose setup.
+#
+# Usage: just <recipe>
+
+# Default recipe - show help
+default:
+    @just --list
+
+# ==============================================================================
+# Test Runners
+# ==============================================================================
+
+# Run all tests
+test-all:
+    @echo "Running all tests..."
+    @just test-conditional-writes
+    @just test-geesefs-conditional
+    @just test-symlinks
+    @echo ""
+    @echo "All tests completed!"
+
+# Run conditional writes test (S3 API level)
+test-conditional-writes:
+    @echo "Running conditional writes test..."
+    cd tests/conditional_writes && just test
+
+# Run GeeseFS conditional test (FUSE level)
+test-geesefs-conditional:
+    @echo "Running GeeseFS conditional test..."
+    cd tests/geesefs_conditional && just test
+
+# Run symlinks file test
+test-symlinks:
+    @echo "Running symlinks file test..."
+    cd tests/symlinks_file && just test
+
+# ==============================================================================
+# Cleanup
+# ==============================================================================
+
+# Clean up all test resources
+clean-all:
+    @echo "Cleaning up all tests..."
+    cd tests/conditional_writes && just clean || true
+    cd tests/geesefs_conditional && just clean || true
+    cd tests/symlinks_file && just clean || true
+    @echo "Cleanup complete!"
+
+# ==============================================================================
+# Individual Test Management
+# ==============================================================================
+
+# Start conditional writes test services
+up-conditional-writes:
+    cd tests/conditional_writes && docker compose up -d --build
+
+# Start GeeseFS conditional test services
+up-geesefs-conditional:
+    cd tests/geesefs_conditional && docker compose up -d --build
+
+# Start symlinks file test services
+up-symlinks:
+    cd tests/symlinks_file && docker compose up -d --build
+
+# ==============================================================================
+# Development Helpers
+# ==============================================================================
+
+# View running containers
+ps:
+    docker ps --filter "name=conditional-writes" --filter "name=geesefs-conditional" --filter "name=symlinks-test"
+
+# List all test folders
+list-tests:
+    @echo "Available tests:"
+    @echo "  - tests/conditional_writes  : S3 If-Match/If-None-Match direct API tests"
+    @echo "  - tests/geesefs_conditional : Conditional writes through FUSE mount"
+    @echo "  - tests/symlinks_file       : .geesefs_symlinks file cross-mount visibility"
+
+# ==============================================================================
+# Symlinks File Test Commands
+# ==============================================================================
+
+# View symlinks test logs
+symlinks-logs:
+    cd tests/symlinks_file && docker compose logs -f geesefs-1 geesefs-2
+
+# Shell into symlinks mount 1
+symlinks-shell-1:
+    docker exec -it symlinks-test-mount-1 sh
+
+# Shell into symlinks mount 2
+symlinks-shell-2:
+    docker exec -it symlinks-test-mount-2 sh
+
+# List symlinks in bucket
+symlinks-ls:
+    docker exec symlinks-test-minio mc find myminio/testbucket --name ".geesefs_symlinks" --print || echo "None found"
+
+# Clean symlinks test
+symlinks-clean:
+    cd tests/symlinks_file && just clean
+
+# ==============================================================================
+# GeeseFS Conditional Test Commands
+# ==============================================================================
+
+# View geesefs-conditional test logs
+geesefs-logs:
+    cd tests/geesefs_conditional && docker compose logs -f geesefs-1 geesefs-2
+
+# Shell into geesefs-conditional mount 1
+geesefs-shell-1:
+    docker exec -it geesefs-conditional-mount-1 sh
+
+# Shell into geesefs-conditional mount 2
+geesefs-shell-2:
+    docker exec -it geesefs-conditional-mount-2 sh
+
+# Clean geesefs-conditional test
+geesefs-clean:
+    cd tests/geesefs_conditional && just clean
+
+# ==============================================================================
+# Conditional Writes Test Commands
+# ==============================================================================
+
+# Clean conditional-writes test
+conditional-clean:
+    cd tests/conditional_writes && just clean

@@ -1,0 +1,66 @@
+# Conditional Writes Test - Tests S3 If-Match/If-None-Match via direct S3 API
+# Usage: docker compose up --build
+
+services:
+  # MinIO S3-compatible storage
+  minio:
+    image: minio/minio:latest
+    container_name: conditional-writes-minio
+    command: server /data --console-address ":9001"
+    ports:
+      - "9100:9000"
+      - "9101:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - test-network
+
+  # MinIO client to create bucket on startup
+  minio-init:
+    image: minio/mc:latest
+    container_name: conditional-writes-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set myminio http://minio:9000 minioadmin minioadmin;
+      mc mb myminio/testbucket --ignore-existing;
+      mc anonymous set public myminio/testbucket;
+      echo 'Bucket testbucket created and configured';
+      "
+    networks:
+      - test-network
+
+  # Test container for conditional write tests using S3 API directly
+  test:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: conditional-writes-test
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+    environment:
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+      S3_ENDPOINT: http://minio:9000
+      S3_BUCKET: testbucket
+    networks:
+      - test-network
+    command: ["python3", "/app/test_conditional_writes.py"]
+
+volumes:
+  minio-data:
+
+networks:
+  test-network:
+    driver: bridge
