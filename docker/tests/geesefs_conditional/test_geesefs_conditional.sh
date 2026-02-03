@@ -9,8 +9,8 @@
 # Don't use set -e as it can cause issues with arithmetic expressions
 # set -e
 
-MOUNT1="geesefs-mount-1"
-MOUNT2="geesefs-mount-2"
+MOUNT1="geesefs-conditional-mount-1"
+MOUNT2="geesefs-conditional-mount-2"
 MOUNT_PATH="/mnt/s3"
 PASSED=0
 FAILED=0

@@ -43,6 +43,17 @@ def get_s3_client():
     )
 
 
+def ensure_bucket_exists(s3):
+    """Create the test bucket if it doesn't exist."""
+    try:
+        s3.head_bucket(Bucket=S3_BUCKET)
+        print(f"  Bucket '{S3_BUCKET}' already exists")
+    except ClientError:
+        print(f"  Creating bucket '{S3_BUCKET}'...")
+        s3.create_bucket(Bucket=S3_BUCKET)
+        print(f"  Bucket '{S3_BUCKET}' created")
+
+
 def cleanup_test_objects(s3, prefix="test-"):
     """Clean up test objects from previous runs."""
     try:
@@ -357,11 +368,11 @@ def main():
 
     s3 = get_s3_client()
 
-    # Wait for MinIO to be ready
+    # Wait for MinIO to be ready and ensure bucket exists
     print("\nWaiting for S3 to be ready...")
     for i in range(30):
         try:
-            s3.head_bucket(Bucket=S3_BUCKET)
+            s3.list_buckets()  # Check if S3 is available
             print("S3 is ready!")
             break
         except:
@@ -369,6 +380,9 @@ def main():
     else:
         print("ERROR: S3 not ready after 30 seconds")
         sys.exit(1)
+
+    # Ensure the test bucket exists
+    ensure_bucket_exists(s3)
 
     # Clean up from previous runs
     print("\nCleaning up previous test objects...")
