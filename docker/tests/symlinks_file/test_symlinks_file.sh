@@ -437,6 +437,56 @@ fi
 cleanup_test_folder 6
 
 # ==============================================================================
+log_header "TEST 7: Direct access to symlink in subfolder without listing"
+# ==============================================================================
+
+setup_test_folder 7
+
+log_info "Creating nested subdirectory and target file from container 1..."
+run_in $MOUNT1 mkdir -p $TEST_DIR/deep/nested
+run_in $MOUNT1 sh -c "echo 'Direct access content' > $TEST_DIR/deep/nested/target.txt"
+run_in $MOUNT1 ln -sf target.txt $TEST_DIR/deep/nested/link.txt
+sync_and_wait
+
+log_info "Verifying symlink exists via S3 API..."
+SYMLINKS_S3=$(get_symlinks_file_s3 "test7/deep/nested")
+if [ -n "$SYMLINKS_S3" ]; then
+    log_pass ".geesefs_symlinks file exists in S3 for nested dir"
+    echo "  Content:"
+    echo "$SYMLINKS_S3" | sed 's/^/    /'
+else
+    log_fail ".geesefs_symlinks file not found in S3 for nested dir"
+fi
+
+log_info "Waiting for cache refresh in container 2..."
+sleep 5
+
+log_info "Directly reading symlink content from container 2 (no ls or cd first)..."
+CONTENT_DIRECT=$(run_in $MOUNT2 cat $TEST_DIR/deep/nested/link.txt 2>/dev/null || echo "FAILED")
+if [ "$CONTENT_DIRECT" = "Direct access content" ]; then
+    log_pass "Symlink in subfolder accessible without listing directory first (container 2)"
+else
+    log_fail "Symlink in subfolder NOT accessible without listing directory (got: $CONTENT_DIRECT)"
+fi
+
+log_info "Directly checking symlink type from container 2 (no ls or cd first)..."
+if run_in $MOUNT2 test -L $TEST_DIR/deep/nested/link.txt; then
+    log_pass "Symlink is recognized as symlink without listing directory first"
+else
+    log_fail "Symlink not recognized as symlink without listing directory first"
+fi
+
+log_info "Directly reading symlink target from container 2 (no ls or cd first)..."
+TARGET_DIRECT=$(run_in $MOUNT2 readlink $TEST_DIR/deep/nested/link.txt 2>/dev/null || echo "FAILED")
+if [ "$TARGET_DIRECT" = "target.txt" ]; then
+    log_pass "Symlink target correct without listing directory first"
+else
+    log_fail "Symlink target incorrect without listing directory (got: $TARGET_DIRECT)"
+fi
+
+cleanup_test_folder 7
+
+# ==============================================================================
 log_header "TEST SUMMARY"
 # ==============================================================================
 
