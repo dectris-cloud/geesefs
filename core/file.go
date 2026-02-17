@@ -1548,9 +1548,16 @@ func (inode *Inode) copyUnmodifiedParts(numParts uint64) (err error) {
 	var startOffset, endOffset uint64
 	for i := uint64(0); i < numParts; i++ {
 		partOffset, partSize := inode.fs.partRange(i)
+		// Skip parts that start at or beyond the source object size — they
+		// don't exist in S3 and can't be server-side copied
+		if partOffset >= inode.knownSize {
+			break
+		}
 		partEnd := partOffset + partSize
-		if partEnd > inode.Attributes.Size {
-			partEnd = inode.Attributes.Size
+		// Clip to the source object size, not Attributes.Size, because the
+		// file may have grown locally beyond the S3 object
+		if partEnd > inode.knownSize {
+			partEnd = inode.knownSize
 		}
 		if inode.mpu.Parts[i] == nil {
 			if endPart == 0 {
