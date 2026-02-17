@@ -67,7 +67,7 @@ func ParseSymlinksFile(data []byte) (*SymlinksFileData, error) {
 
 // Serialize converts the symlinks data to JSON bytes
 func (s *SymlinksFileData) Serialize() ([]byte, error) {
-	return json.MarshalIndent(s, "", "  ")
+	return json.Marshal(s)
 }
 
 // AddSymlink adds or updates a symlink entry
