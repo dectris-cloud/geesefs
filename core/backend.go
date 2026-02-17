@@ -30,12 +30,9 @@ type Capabilities struct {
 	// indicates that the blob store has native support for directories
 	DirBlob bool
 	Name    string
-}
-
-// IsS3Compatible returns true if the backend is S3-compatible (supports conditional writes).
-// This includes AWS S3, MinIO, GCS (via S3 API), and other S3-compatible storage services.
-func (c *Capabilities) IsS3Compatible() bool {
-	return c.Name == "s3" || c.Name == "gcs"
+	// SupportsConditionalWrites indicates the backend supports If-Match/If-None-Match
+	// conditional headers on PutObject (used for optimistic locking of .geesefs_symlinks)
+	SupportsConditionalWrites bool
 }
 
 type HeadBlobInput struct {
