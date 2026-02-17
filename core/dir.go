@@ -1763,15 +1763,6 @@ func (parent *Inode) getSymlinkTargetFromCache(name string) (string, bool) {
 	return parent.dir.symlinksCache.GetSymlink(name)
 }
 
-// isSymlinkFromCache checks if a file is a symlink according to the symlinks file
-// LOCKS_REQUIRED(parent.mu)
-func (parent *Inode) isSymlinkFromCache(name string) bool {
-	if parent.dir.symlinksCache == nil {
-		return false
-	}
-	return parent.dir.symlinksCache.HasSymlink(name)
-}
-
 // newVirtualSymlinkInode creates a new virtual symlink inode from the symlinks cache,
 // inserts it into the parent, and marks it as ST_CACHED. The mtime parameter allows
 // using the mtime from the symlinks file entry; pass time.Time{} to use time.Now().

@@ -20,7 +20,6 @@ import (
 	"fmt"
 	"io"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -37,14 +36,6 @@ type SymlinkEntry struct {
 type SymlinksFileData struct {
 	Version  int                     `json:"version"`
 	Symlinks map[string]SymlinkEntry `json:"symlinks"`
-}
-
-// SymlinksFileCache caches the .symlinks file data for a directory
-type SymlinksFileCache struct {
-	mu       sync.RWMutex
-	data     *SymlinksFileData
-	etag     string
-	loadTime time.Time
 }
 
 // NewSymlinksFileData creates a new empty symlinks file data structure
