@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand"
 	"strings"
 	"syscall"
 	"time"
@@ -378,8 +379,11 @@ func SaveSymlinksFileWithRetry(
 			return "", fmt.Errorf("symlinks file conflict: max retries (%d) exceeded: %w", maxRetries, err)
 		}
 
-		// Wait with exponential backoff before retrying
-		time.Sleep(backoff)
+		// Wait with exponential backoff + jitter before retrying
+		// Full jitter: sleep for a random duration in [backoff/2, backoff)
+		// to avoid thundering herd when multiple mounts contend
+		jitter := backoff/2 + time.Duration(rand.Int63n(int64(backoff/2)))
+		time.Sleep(jitter)
 		backoff = time.Duration(float64(backoff) * backoffFactor)
 		if backoff > maxBackoff {
 			backoff = maxBackoff
