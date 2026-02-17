@@ -98,6 +98,59 @@ func (s *SymlinksTest) TestParseInvalidJSON(t *C) {
 	t.Assert(err, NotNil)
 }
 
+func (s *SymlinksTest) TestDeepCopy(t *C) {
+	original := NewSymlinksFileData()
+	original.AddSymlink("link1", "../target1")
+	original.AddSymlink("link2", "../target2")
+
+	copied := original.DeepCopy()
+
+	// Verify copy has the same data
+	t.Assert(copied.Version, Equals, original.Version)
+	t.Assert(len(copied.Symlinks), Equals, 2)
+	target, ok := copied.GetSymlink("link1")
+	t.Assert(ok, Equals, true)
+	t.Assert(target, Equals, "../target1")
+
+	// Mutate the copy and verify original is unchanged
+	copied.AddSymlink("link3", "../target3")
+	copied.RemoveSymlink("link1")
+
+	t.Assert(original.HasSymlink("link1"), Equals, true)
+	t.Assert(original.HasSymlink("link3"), Equals, false)
+	t.Assert(len(original.Symlinks), Equals, 2)
+
+	t.Assert(copied.HasSymlink("link1"), Equals, false)
+	t.Assert(copied.HasSymlink("link3"), Equals, true)
+	t.Assert(len(copied.Symlinks), Equals, 2)
+}
+
+func (s *SymlinksTest) TestUpdateFailureDoesNotCorruptCache(t *C) {
+	mock := newMockConditionalBackend()
+
+	// Pre-create a symlinks file
+	data := NewSymlinksFileData()
+	data.AddSymlink("existing-link", "../existing-target")
+	etag, err := SaveSymlinksFile(mock, "testdir", ".geesefs_symlinks", data, "")
+	t.Assert(err, IsNil)
+
+	// Simulate a cache: deep copy before mutating
+	cached := data.DeepCopy()
+	workingCopy := cached.DeepCopy()
+	workingCopy.AddSymlink("new-link", "../new-target")
+
+	// Simulate a failed save (wrong ETag)
+	_, err = SaveSymlinksFile(mock, "testdir", ".geesefs_symlinks", workingCopy, "\"wrong-etag\"")
+	t.Assert(err, NotNil)
+
+	// Original cache must be untouched
+	t.Assert(cached.HasSymlink("existing-link"), Equals, true)
+	t.Assert(cached.HasSymlink("new-link"), Equals, false)
+	t.Assert(len(cached.Symlinks), Equals, 1)
+
+	_ = etag
+}
+
 func (s *SymlinksTest) TestGetSymlinksFilePath(t *C) {
 	t.Assert(getSymlinksFilePath("", ".geesefs_symlinks"), Equals, ".geesefs_symlinks")
 	t.Assert(getSymlinksFilePath("dir", ".geesefs_symlinks"), Equals, "dir/.geesefs_symlinks")

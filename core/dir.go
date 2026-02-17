@@ -1667,13 +1667,14 @@ func (parent *Inode) updateSymlinksFile(name string, target string, remove bool)
 
 	symlinksFileName := parent.fs.flags.SymlinksFile
 
-	// Load or use cached symlinks data
+	// Load or use cached symlinks data — always work on a deep copy
+	// so the in-memory cache is not corrupted if the save fails.
 	var data *SymlinksFileData
 	var etag string
 	var err error
 
 	if parent.dir.symlinksCache != nil {
-		data = parent.dir.symlinksCache
+		data = parent.dir.symlinksCache.DeepCopy()
 		etag = parent.dir.symlinksCacheETag
 	} else {
 		data, etag, err = LoadSymlinksFile(cloud, dirKey, symlinksFileName)
@@ -1682,7 +1683,7 @@ func (parent *Inode) updateSymlinksFile(name string, target string, remove bool)
 		}
 	}
 
-	// Update the data
+	// Update the copy (original cache is untouched)
 	if remove {
 		data.RemoveSymlink(name)
 	} else {
@@ -1707,7 +1708,7 @@ func (parent *Inode) updateSymlinksFile(name string, target string, remove bool)
 		return err
 	}
 
-	// Update cache - reload to get the merged state if there was a conflict
+	// Only update cache after successful save
 	parent.dir.symlinksCache = data
 	parent.dir.symlinksCacheETag = newETag
 	parent.dir.symlinksCacheTime = time.Now()

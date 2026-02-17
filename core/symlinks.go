@@ -109,6 +109,18 @@ func (s *SymlinksFileData) IsEmpty() bool {
 	return len(s.Symlinks) == 0
 }
 
+// DeepCopy returns a deep copy of the symlinks data
+func (s *SymlinksFileData) DeepCopy() *SymlinksFileData {
+	copy := &SymlinksFileData{
+		Version:  s.Version,
+		Symlinks: make(map[string]SymlinkEntry, len(s.Symlinks)),
+	}
+	for k, v := range s.Symlinks {
+		copy.Symlinks[k] = v
+	}
+	return copy
+}
+
 // getSymlinksFilePath returns the full key path for the .symlinks file in a directory
 func getSymlinksFilePath(dirKey string, symlinksFileName string) string {
 	if dirKey == "" {
