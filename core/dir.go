@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/jacobsa/fuse/fuseops"
+	"github.com/sirupsen/logrus"
 
 	"github.com/yandex-cloud/geesefs/core/cfg"
 )
@@ -2343,8 +2344,8 @@ func (parent *Inode) LookUpCached(name string) (inode *Inode, err error) {
 	ok := false
 	inode = parent.findChildUnlocked(name)
 
-	// Debug logging for symlinks troubleshooting
-	if parent.fs.flags.EnableSymlinksFile {
+	// Debug logging for symlinks troubleshooting (guarded to avoid overhead on every lookup)
+	if parent.fs.flags.EnableSymlinksFile && s3Log.IsLevelEnabled(logrus.DebugLevel) {
 		childCount := len(parent.dir.Children)
 		cacheValid := !expired(parent.dir.DirTime, parent.fs.flags.StatCacheTTL)
 		hasSymlinksCache := parent.dir.symlinksCache != nil
