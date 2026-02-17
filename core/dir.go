@@ -1723,10 +1723,17 @@ func (parent *Inode) updateSymlinksFile(name string, target string, remove bool)
 }
 
 // loadSymlinksCache loads the symlinks file cache for this directory if needed.
+// Skips the network call if the cache was loaded recently (within StatCacheTTL).
 // LOCKS_REQUIRED(parent.mu)
 // Note: temporarily releases parent.mu during network I/O.
 func (parent *Inode) loadSymlinksCache() error {
 	if !parent.fs.flags.EnableSymlinksFile {
+		return nil
+	}
+
+	// Skip if cache was recently loaded (within StatCacheTTL)
+	if parent.dir.symlinksCache != nil &&
+		!expired(parent.dir.symlinksCacheTime, parent.fs.flags.StatCacheTTL) {
 		return nil
 	}
 
