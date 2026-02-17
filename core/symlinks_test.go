@@ -100,6 +100,66 @@ func (s *SymlinksTest) TestParseInvalidJSON(t *C) {
 	t.Assert(err, NotNil)
 }
 
+func (s *SymlinksTest) TestLoadCorruptedSymlinksFile(t *C) {
+	mock := newMockConditionalBackend()
+
+	// Store corrupted JSON in S3
+	mock.objects["testdir/.geesefs_symlinks"] = &mockStoredObject{
+		data: []byte("<<<corrupted data>>>"),
+		etag: "\"corrupt\"",
+	}
+
+	// LoadSymlinksFile should return an error for corrupted data
+	_, _, err := LoadSymlinksFile(mock, "testdir", ".geesefs_symlinks")
+	t.Assert(err, NotNil)
+}
+
+func (s *SymlinksTest) TestRecoveryAfterCorruption(t *C) {
+	mock := newMockConditionalBackend()
+
+	// Store corrupted JSON in S3
+	mock.objects["testdir/.geesefs_symlinks"] = &mockStoredObject{
+		data: []byte("{invalid json"),
+		etag: "\"corrupt\"",
+	}
+
+	// Load fails due to corruption
+	_, _, err := LoadSymlinksFile(mock, "testdir", ".geesefs_symlinks")
+	t.Assert(err, NotNil)
+
+	// Overwrite with valid data (using the known ETag)
+	data := NewSymlinksFileData()
+	data.AddSymlink("link1", "../target1")
+	newETag, err := SaveSymlinksFile(mock, "testdir", ".geesefs_symlinks", data, "\"corrupt\"")
+	t.Assert(err, IsNil)
+	t.Assert(newETag != "", Equals, true)
+
+	// Load should now succeed
+	loaded, _, err := LoadSymlinksFile(mock, "testdir", ".geesefs_symlinks")
+	t.Assert(err, IsNil)
+	target, ok := loaded.GetSymlink("link1")
+	t.Assert(ok, Equals, true)
+	t.Assert(target, Equals, "../target1")
+}
+
+func (s *SymlinksTest) TestParseMissingSymlinksField(t *C) {
+	// Valid JSON but missing "symlinks" field
+	data, err := ParseSymlinksFile([]byte(`{"version":1}`))
+	t.Assert(err, IsNil)
+	t.Assert(data.IsEmpty(), Equals, true)
+	t.Assert(data.Symlinks, NotNil) // should be initialized, not nil
+}
+
+func (s *SymlinksTest) TestParseUnknownVersion(t *C) {
+	// Higher version number should still parse (forward compatible)
+	data, err := ParseSymlinksFile([]byte(`{"version":99,"symlinks":{"link1":{"target":"t1"}}}`))
+	t.Assert(err, IsNil)
+	t.Assert(data.Version, Equals, 99)
+	target, ok := data.GetSymlink("link1")
+	t.Assert(ok, Equals, true)
+	t.Assert(target, Equals, "t1")
+}
+
 func (s *SymlinksTest) TestDeepCopy(t *C) {
 	original := NewSymlinksFileData()
 	original.AddSymlink("link1", "../target1")
