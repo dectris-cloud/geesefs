@@ -583,6 +583,12 @@ MISC OPTIONS:
 			Usage: "Hide the .symlinks file from directory listings. Set to false to show it. (default: true)",
 		},
 
+		cli.DurationFlag{
+			Name:  "symlinks-batch-delay",
+			Value: 100 * time.Millisecond,
+			Usage: "Delay before flushing batched symlinks changes to S3. 0 to disable batching.",
+		},
+
 		cli.StringFlag{
 			Name:  "refresh-attr",
 			Value: ".invalidate",
@@ -888,6 +894,7 @@ func PopulateFlags(c *cli.Context) (ret *FlagStorage) {
 		SymlinksFile:        c.String("symlinks-file"),
 		EnableSymlinksFile:  c.Bool("enable-symlinks-file"),
 		HideSymlinksFile:    c.Bool("hide-symlinks-file"),
+		SymlinksBatchDelay:  c.Duration("symlinks-batch-delay"),
 		RefreshAttr:         c.String("refresh-attr"),
 		CachePath:           c.String("cache"),
 		MaxDiskCacheFD:      int64(c.Int("max-disk-cache-fd")),
@@ -1093,6 +1100,7 @@ func DefaultFlags() *FlagStorage {
 		MtimeAttr:           "mtime",
 		SymlinkAttr:         "--symlink-target",
 		SymlinksFile:        ".geesefs_symlinks",
+		SymlinksBatchDelay:  100 * time.Millisecond,
 		RefreshAttr:         ".invalidate",
 		StatCacheTTL:        30 * time.Second,
 		HTTPTimeout:         30 * time.Second,

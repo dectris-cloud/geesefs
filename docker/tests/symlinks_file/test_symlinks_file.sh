@@ -643,6 +643,114 @@ fi
 cleanup_test_folder 9
 
 # ==============================================================================
+log_header "TEST 10: Batch create — rapid symlinks all visible after flush"
+# ==============================================================================
+
+setup_test_folder 10
+
+log_info "Creating target files..."
+for i in 1 2 3 4 5 6 7 8 9 10; do
+    run_in $MOUNT1 sh -c "echo 'target$i content' > $TEST_DIR/target$i.txt"
+done
+sync_and_wait
+
+log_info "Creating 10 symlinks in rapid succession..."
+for i in 1 2 3 4 5 6 7 8 9 10; do
+    run_in $MOUNT1 ln -sf target$i.txt $TEST_DIR/link$i.txt
+done
+
+log_info "Syncing to flush batched changes..."
+run_in $MOUNT1 sync
+sleep 3
+
+log_info "Verifying all 10 symlinks in container 1..."
+ALL_OK="yes"
+for i in 1 2 3 4 5 6 7 8 9 10; do
+    CONTENT=$(run_in $MOUNT1 cat $TEST_DIR/link$i.txt 2>/dev/null || echo "FAILED")
+    if [ "$CONTENT" != "target$i content" ]; then
+        log_fail "link$i.txt content incorrect (got: $CONTENT)"
+        ALL_OK="no"
+    fi
+done
+if [ "$ALL_OK" = "yes" ]; then
+    log_pass "All 10 symlinks work correctly in container 1"
+fi
+
+log_info "Checking .geesefs_symlinks file via S3 API..."
+SYMLINKS_CONTENT=$(get_symlinks_file_s3 "test10")
+if [ -n "$SYMLINKS_CONTENT" ]; then
+    LINK_COUNT=$(echo "$SYMLINKS_CONTENT" | grep -o '"link[0-9]*\.txt"' | wc -l)
+    LINK_COUNT=$(echo "$LINK_COUNT" | tr -d ' ')
+    if [ "$LINK_COUNT" = "10" ]; then
+        log_pass ".geesefs_symlinks contains all 10 symlink entries"
+    else
+        log_fail ".geesefs_symlinks contains $LINK_COUNT entries (expected 10)"
+        echo "  Content:"
+        echo "$SYMLINKS_CONTENT" | sed 's/^/    /'
+    fi
+else
+    log_fail ".geesefs_symlinks file not found in S3"
+fi
+
+log_info "Waiting for cache refresh in container 2..."
+sleep 5
+run_in $MOUNT2 ls -la $TEST_DIR/ >/dev/null 2>&1 || true
+sleep 2
+
+log_info "Verifying all 10 symlinks visible in container 2..."
+ALL_OK="yes"
+for i in 1 2 3 4 5 6 7 8 9 10; do
+    CONTENT=$(run_in $MOUNT2 cat $TEST_DIR/link$i.txt 2>/dev/null || echo "FAILED")
+    if [ "$CONTENT" != "target$i content" ]; then
+        log_fail "link$i.txt not visible/correct in container 2 (got: $CONTENT)"
+        ALL_OK="no"
+    fi
+done
+if [ "$ALL_OK" = "yes" ]; then
+    log_pass "All 10 symlinks visible and correct in container 2"
+fi
+
+cleanup_test_folder 10
+
+# ==============================================================================
+log_header "TEST 11: Fsync flush — create symlinks then sync forces S3 persistence"
+# ==============================================================================
+
+setup_test_folder 11
+
+log_info "Creating target file..."
+run_in $MOUNT1 sh -c "echo 'fsync test' > $TEST_DIR/target.txt"
+sync_and_wait
+
+log_info "Creating symlinks rapidly..."
+run_in $MOUNT1 ln -sf target.txt $TEST_DIR/fsync_link1.txt
+run_in $MOUNT1 ln -sf target.txt $TEST_DIR/fsync_link2.txt
+run_in $MOUNT1 ln -sf target.txt $TEST_DIR/fsync_link3.txt
+
+log_info "Calling sync to force S3 persistence..."
+run_in $MOUNT1 sync
+sleep 2
+
+log_info "Verifying S3 has symlinks immediately after sync..."
+SYMLINKS_CONTENT=$(get_symlinks_file_s3 "test11")
+if [ -n "$SYMLINKS_CONTENT" ]; then
+    FOUND_ALL="yes"
+    for name in fsync_link1.txt fsync_link2.txt fsync_link3.txt; do
+        if ! echo "$SYMLINKS_CONTENT" | grep -q "$name"; then
+            log_fail ".geesefs_symlinks missing $name after sync"
+            FOUND_ALL="no"
+        fi
+    done
+    if [ "$FOUND_ALL" = "yes" ]; then
+        log_pass "All symlinks persisted in S3 after sync"
+    fi
+else
+    log_fail ".geesefs_symlinks not found in S3 after sync"
+fi
+
+cleanup_test_folder 11
+
+# ==============================================================================
 log_header "TEST SUMMARY"
 # ==============================================================================
 

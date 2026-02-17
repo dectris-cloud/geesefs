@@ -391,11 +391,33 @@ func newGoofys(ctx context.Context, bucket string, flags *cfg.FlagStorage,
 }
 
 func (fs *Goofys) Shutdown() {
+	fs.flushAllPendingSymlinks()
 	atomic.StoreInt32(&fs.shutdown, 1)
 	close(fs.shutdownCh)
 	fs.WakeupFlusher()
 	if fs.diskFdQueue != nil {
 		fs.diskFdQueue.cond.Broadcast()
+	}
+}
+
+// flushAllPendingSymlinks walks all directory inodes and flushes any
+// pending batched symlink changes to S3.
+func (fs *Goofys) flushAllPendingSymlinks() {
+	if !fs.flags.EnableSymlinksFile {
+		return
+	}
+	fs.mu.RLock()
+	inodes := make([]*Inode, 0)
+	for _, inode := range fs.inodes {
+		if inode.isDir() {
+			inodes = append(inodes, inode)
+		}
+	}
+	fs.mu.RUnlock()
+	for _, inode := range inodes {
+		if err := inode.FlushPendingSymlinks(); err != nil {
+			s3Log.Warnf("flushAllPendingSymlinks: failed for %v: %v", inode.FullName(), err)
+		}
 	}
 }
 
@@ -1170,6 +1192,17 @@ func (fs *Goofys) SyncTree(parent *Inode) (err error) {
 		fs.mu.RUnlock()
 		if inode != nil {
 			inode.SyncFile()
+			if fs.flags.EnableSymlinksFile && inode.isDir() {
+				if err := inode.FlushPendingSymlinks(); err != nil {
+					s3Log.Warnf("SyncTree: flush symlinks failed for %v: %v", inode.FullName(), err)
+				}
+			}
+		}
+	}
+	// Also flush the parent directory itself (isParentOf does not include self)
+	if parent != nil && fs.flags.EnableSymlinksFile && parent.isDir() {
+		if err := parent.FlushPendingSymlinks(); err != nil {
+			s3Log.Warnf("SyncTree: flush symlinks failed for %v: %v", parent.FullName(), err)
 		}
 	}
 	return

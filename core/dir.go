@@ -37,6 +37,13 @@ type SlurpGap struct {
 	loadTime   time.Time
 }
 
+// PendingSymlinkChange represents a batched symlink create or delete operation.
+type PendingSymlinkChange struct {
+	Name   string
+	Target string // empty for removes
+	Remove bool
+}
+
 type DirInodeData struct {
 	cloud       StorageBackend
 	mountPrefix string
@@ -66,6 +73,11 @@ type DirInodeData struct {
 	symlinksCache     *SymlinksFileData
 	symlinksCacheETag string
 	symlinksCacheTime time.Time
+
+	// Symlinks batching (used when SymlinksBatchDelay > 0)
+	pendingSymlinkChanges []PendingSymlinkChange // GUARDED_BY(parent.mu)
+	symlinkFlushTimer     *time.Timer            // GUARDED_BY(parent.mu)
+	symlinkFlushETag      string                 // ETag at time first change was queued
 }
 
 // Returns the position of first char < '/' in `inp` after prefixLen + any continued '/' characters.
@@ -1103,6 +1115,11 @@ func (inode *Inode) ResetForUnmount() {
 	}
 
 	inode.mu.Lock()
+	// Stop any pending symlinks flush timer
+	if inode.dir.symlinkFlushTimer != nil {
+		inode.dir.symlinkFlushTimer.Stop()
+		inode.dir.symlinkFlushTimer = nil
+	}
 	// First reset the cloud info for this directory. After that, any read and
 	// write operations under this directory will not know about this cloud.
 	inode.dir.cloud = nil
@@ -1635,52 +1652,99 @@ func (parent *Inode) CreateSymlink(
 }
 
 // updateSymlinksFile updates the .symlinks file in this directory.
+// When SymlinksBatchDelay > 0, the in-memory cache is updated eagerly
+// and the S3 PUT is deferred. When SymlinksBatchDelay == 0, the S3 PUT
+// happens immediately (preserving the original behavior).
 // LOCKS_REQUIRED(parent.mu)
 // Note: temporarily releases parent.mu during network I/O.
 func (parent *Inode) updateSymlinksFile(name string, target string, remove bool) error {
-	cloud, dirKey := parent.cloud()
+	cloud, _ := parent.cloud()
 	if cloud == nil {
 		return syscall.ESTALE
 	}
 
-	// Remove trailing slash from dirKey for consistency
-	dirKey = strings.TrimSuffix(dirKey, "/")
-
-	symlinksFileName := parent.fs.flags.SymlinksFile
-
-	// Load or use cached symlinks data — always work on a deep copy
-	// so the in-memory cache is not corrupted if the save fails.
-	var data *SymlinksFileData
-	var etag string
-	var err error
-
-	if parent.dir.symlinksCache != nil {
-		data = parent.dir.symlinksCache.DeepCopy()
-		etag = parent.dir.symlinksCacheETag
-	} else {
-		// Need to load from cloud — release lock during I/O
-		parent.mu.Unlock()
-		data, etag, err = LoadSymlinksFile(cloud, dirKey, symlinksFileName)
-		parent.mu.Lock()
-		if err != nil {
+	// Ensure the cache is loaded before modifying
+	if parent.dir.symlinksCache == nil {
+		if err := parent.loadSymlinksCache(); err != nil {
 			return err
+		}
+		// loadSymlinksCache may have loaded it; if still nil, initialize empty
+		if parent.dir.symlinksCache == nil {
+			parent.dir.symlinksCache = NewSymlinksFileData()
 		}
 	}
 
-	// Update the copy (original cache is untouched)
+	// Update in-memory cache eagerly — all local readers see changes immediately
 	if remove {
-		data.RemoveSymlink(name)
+		parent.dir.symlinksCache.RemoveSymlink(name)
 	} else {
-		data.AddSymlink(name, target)
+		parent.dir.symlinksCache.AddSymlink(name, target)
 	}
 
-	// Define merge function for conflict resolution
+	if parent.fs.flags.SymlinksBatchDelay == 0 {
+		// Batching disabled: flush immediately
+		parent.dir.pendingSymlinkChanges = append(parent.dir.pendingSymlinkChanges,
+			PendingSymlinkChange{Name: name, Target: target, Remove: remove})
+		if parent.dir.symlinkFlushETag == "" && parent.dir.symlinksCacheETag != "" {
+			parent.dir.symlinkFlushETag = parent.dir.symlinksCacheETag
+		}
+		return parent.flushSymlinksChanges()
+	}
+
+	// Batching enabled: queue the change and schedule a deferred flush
+	if len(parent.dir.pendingSymlinkChanges) == 0 {
+		// Capture ETag at time first change is queued
+		parent.dir.symlinkFlushETag = parent.dir.symlinksCacheETag
+	}
+	parent.dir.pendingSymlinkChanges = append(parent.dir.pendingSymlinkChanges,
+		PendingSymlinkChange{Name: name, Target: target, Remove: remove})
+	parent.scheduleSymlinksFlush()
+
+	return nil
+}
+
+// flushSymlinksChanges flushes all pending symlink changes to S3.
+// It deep-copies the current cache, replays all pending changes onto a fresh
+// copy for the merge function, and uses SaveSymlinksFileWithRetry.
+// On failure, changes are prepended back to the pending queue.
+// LOCKS_REQUIRED(parent.mu)
+// Note: temporarily releases parent.mu during network I/O.
+func (parent *Inode) flushSymlinksChanges() error {
+	if len(parent.dir.pendingSymlinkChanges) == 0 {
+		return nil
+	}
+
+	cloud, dirKey := parent.cloud()
+	if cloud == nil {
+		return syscall.ESTALE
+	}
+	dirKey = strings.TrimSuffix(dirKey, "/")
+	symlinksFileName := parent.fs.flags.SymlinksFile
+
+	// Snapshot and clear pending changes
+	changes := parent.dir.pendingSymlinkChanges
+	parent.dir.pendingSymlinkChanges = nil
+	etag := parent.dir.symlinkFlushETag
+	parent.dir.symlinkFlushETag = ""
+
+	// Stop timer if running
+	if parent.dir.symlinkFlushTimer != nil {
+		parent.dir.symlinkFlushTimer.Stop()
+		parent.dir.symlinkFlushTimer = nil
+	}
+
+	// Deep-copy the current in-memory cache for the S3 PUT payload.
+	// The in-memory cache already has all changes applied eagerly.
+	data := parent.dir.symlinksCache.DeepCopy()
+
+	// Build merge function that replays ALL batched changes on conflict
 	mergeFn := func(currentData *SymlinksFileData) (*SymlinksFileData, error) {
-		// Re-apply our change to the current cloud state
-		if remove {
-			currentData.RemoveSymlink(name)
-		} else {
-			currentData.AddSymlink(name, target)
+		for _, ch := range changes {
+			if ch.Remove {
+				currentData.RemoveSymlink(ch.Name)
+			} else {
+				currentData.AddSymlink(ch.Name, ch.Target)
+			}
 		}
 		return currentData, nil
 	}
@@ -1690,16 +1754,53 @@ func (parent *Inode) updateSymlinksFile(name string, target string, remove bool)
 	parent.mu.Unlock()
 	newETag, err := SaveSymlinksFileWithRetry(cloud, dirKey, symlinksFileName, data, etag, mergeFn, maxRetries)
 	parent.mu.Lock()
+
 	if err != nil {
+		// Re-queue failed changes at the front so they are retried
+		parent.dir.pendingSymlinkChanges = append(changes, parent.dir.pendingSymlinkChanges...)
+		if parent.dir.symlinkFlushETag == "" {
+			parent.dir.symlinkFlushETag = etag
+		}
 		return err
 	}
 
-	// Only update cache after successful save
-	parent.dir.symlinksCache = data
+	// Update cache metadata after successful save
 	parent.dir.symlinksCacheETag = newETag
 	parent.dir.symlinksCacheTime = time.Now()
-
 	return nil
+}
+
+// scheduleSymlinksFlush schedules a deferred flush of pending symlink changes.
+// No-op if a timer is already running.
+// LOCKS_REQUIRED(parent.mu)
+func (parent *Inode) scheduleSymlinksFlush() {
+	if parent.dir.symlinkFlushTimer != nil {
+		return // timer already running
+	}
+	delay := parent.fs.flags.SymlinksBatchDelay
+	parent.dir.symlinkFlushTimer = time.AfterFunc(delay, func() {
+		parent.mu.Lock()
+		parent.dir.symlinkFlushTimer = nil
+		err := parent.flushSymlinksChanges()
+		if err != nil {
+			s3Log.Warnf("flushSymlinksChanges failed for %v: %v, will retry", parent.FullName(), err)
+			// Re-schedule on error
+			parent.scheduleSymlinksFlush()
+		}
+		parent.mu.Unlock()
+	})
+}
+
+// FlushPendingSymlinks flushes any pending batched symlink changes to S3.
+// Public entry point used by SyncTree and Shutdown.
+// ACQUIRES_LOCK(parent.mu)
+func (parent *Inode) FlushPendingSymlinks() error {
+	parent.mu.Lock()
+	defer parent.mu.Unlock()
+	if parent.dir == nil || len(parent.dir.pendingSymlinkChanges) == 0 {
+		return nil
+	}
+	return parent.flushSymlinksChanges()
 }
 
 // loadSymlinksCache loads the symlinks file cache for this directory if needed.
@@ -1750,6 +1851,16 @@ func (parent *Inode) loadSymlinksCache() error {
 	parent.dir.symlinksCache = data
 	parent.dir.symlinksCacheETag = etag
 	parent.dir.symlinksCacheTime = time.Now()
+
+	// Re-apply any pending symlink changes to the freshly loaded data
+	// so that local readers see consistent state
+	for _, ch := range parent.dir.pendingSymlinkChanges {
+		if ch.Remove {
+			parent.dir.symlinksCache.RemoveSymlink(ch.Name)
+		} else {
+			parent.dir.symlinksCache.AddSymlink(ch.Name, ch.Target)
+		}
+	}
 
 	return nil
 }

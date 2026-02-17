@@ -16,9 +16,13 @@ package core
 
 import (
 	"fmt"
+	"sync"
 	"syscall"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws/awserr"
+	"github.com/jacobsa/fuse/fuseops"
+	"github.com/yandex-cloud/geesefs/core/cfg"
 	. "gopkg.in/check.v1"
 )
 
@@ -906,5 +910,390 @@ func (s *SymlinksTest) TestIsNotModifiedWithNilAndUnrelated(t *C) {
 	t.Assert(isNotModified(nil), Equals, false)
 	t.Assert(isNotModified(fmt.Errorf("error 304 in processing")), Equals, false)
 	t.Assert(isNotModified(fmt.Errorf("network timeout")), Equals, false)
+}
+
+// ============================================================================
+// Helper: creates a minimal Goofys + directory inode for batching tests
+// ============================================================================
+
+func newTestDirInode(mock StorageBackend, batchDelay time.Duration) (*Goofys, *Inode) {
+	flags := cfg.DefaultFlags()
+	flags.EnableSymlinksFile = true
+	flags.SymlinksBatchDelay = batchDelay
+	flags.StatCacheTTL = 30 * time.Second
+
+	fs := &Goofys{
+		flags:            flags,
+		inodes:           make(map[fuseops.InodeID]*Inode),
+		nextInodeID:      fuseops.RootInodeID + 1,
+		inflightChanges:  make(map[string]int),
+		inflightListings: make(map[int]map[string]bool),
+	}
+	fs.flusherCond = sync.NewCond(&fs.flusherMu)
+
+	root := &Inode{
+		Name: "",
+		fs:   fs,
+		Id:   fuseops.RootInodeID,
+		dir: &DirInodeData{
+			cloud:          mock,
+			mountPrefix:    "",
+			lastOpenDirIdx: -1,
+		},
+	}
+	fs.inodes[fuseops.RootInodeID] = root
+	return fs, root
+}
+
+// ============================================================================
+// Tests for symlinks batching
+// ============================================================================
+
+func (s *SymlinksTest) TestBatchingQueuesChangesAndUpdatesCache(t *C) {
+	mock := newMockConditionalBackend()
+	_, parent := newTestDirInode(mock, 1*time.Hour) // long delay so timer doesn't fire
+
+	parent.mu.Lock()
+
+	// Create first symlink
+	err := parent.updateSymlinksFile("link1", "../target1", false)
+	t.Assert(err, IsNil)
+
+	// Cache should be updated eagerly
+	t.Assert(parent.dir.symlinksCache.HasSymlink("link1"), Equals, true)
+
+	// Pending queue should have one entry
+	t.Assert(len(parent.dir.pendingSymlinkChanges), Equals, 1)
+	t.Assert(parent.dir.pendingSymlinkChanges[0].Name, Equals, "link1")
+
+	// Create second symlink
+	err = parent.updateSymlinksFile("link2", "../target2", false)
+	t.Assert(err, IsNil)
+
+	// Cache should have both
+	t.Assert(parent.dir.symlinksCache.HasSymlink("link1"), Equals, true)
+	t.Assert(parent.dir.symlinksCache.HasSymlink("link2"), Equals, true)
+
+	// Pending queue should have two entries
+	t.Assert(len(parent.dir.pendingSymlinkChanges), Equals, 2)
+
+	// No S3 PUT should have happened yet
+	_, exists := mock.objects[".geesefs_symlinks"]
+	t.Assert(exists, Equals, false)
+
+	parent.mu.Unlock()
+}
+
+func (s *SymlinksTest) TestBatchFlushCoalescesChanges(t *C) {
+	mock := newMockConditionalBackend()
+	_, parent := newTestDirInode(mock, 1*time.Hour)
+
+	parent.mu.Lock()
+
+	// Create 10 symlinks
+	for i := 0; i < 10; i++ {
+		name := fmt.Sprintf("link%d", i)
+		target := fmt.Sprintf("../target%d", i)
+		err := parent.updateSymlinksFile(name, target, false)
+		t.Assert(err, IsNil)
+	}
+
+	t.Assert(len(parent.dir.pendingSymlinkChanges), Equals, 10)
+
+	// Count PutBlob calls
+	putCount := 0
+	mock.onPutBlob = func(param *PutBlobInput) {
+		putCount++
+	}
+
+	// Flush should produce a single S3 PUT
+	err := parent.flushSymlinksChanges()
+	t.Assert(err, IsNil)
+	t.Assert(putCount, Equals, 1)
+
+	// Pending queue should be empty
+	t.Assert(len(parent.dir.pendingSymlinkChanges), Equals, 0)
+
+	// S3 should have all 10 symlinks
+	obj := mock.objects[".geesefs_symlinks"]
+	t.Assert(obj, NotNil)
+	parsed, err := ParseSymlinksFile(obj.data)
+	t.Assert(err, IsNil)
+	t.Assert(len(parsed.Symlinks), Equals, 10)
+
+	parent.mu.Unlock()
+}
+
+func (s *SymlinksTest) TestBatchMergeReplaysAllChangesOnConflict(t *C) {
+	mock := newMockConditionalBackend()
+	_, parent := newTestDirInode(mock, 1*time.Hour)
+
+	// Pre-create a symlinks file in S3 (simulating another mount)
+	otherData := NewSymlinksFileData()
+	otherData.AddSymlink("other-link", "../other-target")
+	etag, err := SaveSymlinksFile(mock, "", ".geesefs_symlinks", otherData, "")
+	t.Assert(err, IsNil)
+
+	parent.mu.Lock()
+
+	// Load cache (gets the existing file)
+	err = parent.loadSymlinksCache()
+	t.Assert(err, IsNil)
+	t.Assert(parent.dir.symlinksCache.HasSymlink("other-link"), Equals, true)
+
+	// Queue two changes
+	err = parent.updateSymlinksFile("link1", "../target1", false)
+	t.Assert(err, IsNil)
+	err = parent.updateSymlinksFile("link2", "../target2", false)
+	t.Assert(err, IsNil)
+
+	// Simulate a concurrent modification: another mount changed the file
+	otherData2 := NewSymlinksFileData()
+	otherData2.AddSymlink("other-link", "../other-target")
+	otherData2.AddSymlink("concurrent-link", "../concurrent-target")
+	// Overwrite directly (bypassing conditional checks for test setup)
+	mock.mu.Lock()
+	serialized, _ := otherData2.Serialize()
+	mock.objects[".geesefs_symlinks"] = &mockStoredObject{
+		data: serialized,
+		etag: "\"concurrent-etag\"",
+	}
+	mock.mu.Unlock()
+
+	// Flush with stale ETag - should trigger merge
+	err = parent.flushSymlinksChanges()
+	t.Assert(err, IsNil)
+
+	// Result should have all 4 symlinks (other-link, concurrent-link, link1, link2)
+	obj := mock.objects[".geesefs_symlinks"]
+	parsed, err := ParseSymlinksFile(obj.data)
+	t.Assert(err, IsNil)
+	t.Assert(parsed.HasSymlink("other-link"), Equals, true)
+	t.Assert(parsed.HasSymlink("concurrent-link"), Equals, true)
+	t.Assert(parsed.HasSymlink("link1"), Equals, true)
+	t.Assert(parsed.HasSymlink("link2"), Equals, true)
+
+	_ = etag
+	parent.mu.Unlock()
+}
+
+func (s *SymlinksTest) TestBatchOrderPreservation(t *C) {
+	mock := newMockConditionalBackend()
+	_, parent := newTestDirInode(mock, 1*time.Hour)
+
+	parent.mu.Lock()
+
+	// ln -s a foo && rm foo && ln -s b foo
+	err := parent.updateSymlinksFile("foo", "a", false)
+	t.Assert(err, IsNil)
+	err = parent.updateSymlinksFile("foo", "", true)
+	t.Assert(err, IsNil)
+	err = parent.updateSymlinksFile("foo", "b", false)
+	t.Assert(err, IsNil)
+
+	// In-memory cache should show foo -> b
+	target, ok := parent.dir.symlinksCache.GetSymlink("foo")
+	t.Assert(ok, Equals, true)
+	t.Assert(target, Equals, "b")
+
+	// Flush
+	err = parent.flushSymlinksChanges()
+	t.Assert(err, IsNil)
+
+	// S3 should have foo -> b
+	obj := mock.objects[".geesefs_symlinks"]
+	parsed, err := ParseSymlinksFile(obj.data)
+	t.Assert(err, IsNil)
+	target, ok = parsed.GetSymlink("foo")
+	t.Assert(ok, Equals, true)
+	t.Assert(target, Equals, "b")
+
+	parent.mu.Unlock()
+}
+
+func (s *SymlinksTest) TestNoBatchingFlushesImmediately(t *C) {
+	mock := newMockConditionalBackend()
+	_, parent := newTestDirInode(mock, 0) // batching disabled
+
+	parent.mu.Lock()
+
+	// Create a symlink - should flush immediately
+	err := parent.updateSymlinksFile("link1", "../target1", false)
+	t.Assert(err, IsNil)
+
+	// Pending queue should be empty (already flushed)
+	t.Assert(len(parent.dir.pendingSymlinkChanges), Equals, 0)
+
+	// S3 should have the symlink
+	obj := mock.objects[".geesefs_symlinks"]
+	t.Assert(obj, NotNil)
+	parsed, err := ParseSymlinksFile(obj.data)
+	t.Assert(err, IsNil)
+	t.Assert(parsed.HasSymlink("link1"), Equals, true)
+
+	parent.mu.Unlock()
+}
+
+func (s *SymlinksTest) TestCacheReloadPreservesPendingChanges(t *C) {
+	mock := newMockConditionalBackend()
+	_, parent := newTestDirInode(mock, 1*time.Hour)
+
+	parent.mu.Lock()
+
+	// Create initial symlinks and flush them
+	err := parent.updateSymlinksFile("existing", "../existing-target", false)
+	t.Assert(err, IsNil)
+	err = parent.flushSymlinksChanges()
+	t.Assert(err, IsNil)
+
+	// Queue a new change (not yet flushed)
+	err = parent.updateSymlinksFile("pending", "../pending-target", false)
+	t.Assert(err, IsNil)
+	t.Assert(len(parent.dir.pendingSymlinkChanges), Equals, 1)
+
+	// Force cache to expire by setting time in the past
+	parent.dir.symlinksCacheTime = time.Time{}
+
+	// Reload the cache from S3
+	err = parent.loadSymlinksCache()
+	t.Assert(err, IsNil)
+
+	// The pending change should still be visible in the cache
+	t.Assert(parent.dir.symlinksCache.HasSymlink("pending"), Equals, true)
+	t.Assert(parent.dir.symlinksCache.HasSymlink("existing"), Equals, true)
+
+	parent.mu.Unlock()
+}
+
+func (s *SymlinksTest) TestFlushErrorRequeuesChanges(t *C) {
+	mock := newMockConditionalBackend()
+	_, parent := newTestDirInode(mock, 1*time.Hour)
+
+	// Pre-create a symlinks file with a different ETag to cause conflict
+	otherData := NewSymlinksFileData()
+	etag, err := SaveSymlinksFile(mock, "", ".geesefs_symlinks", otherData, "")
+	t.Assert(err, IsNil)
+
+	parent.mu.Lock()
+
+	// Load cache
+	err = parent.loadSymlinksCache()
+	t.Assert(err, IsNil)
+
+	// Queue a change
+	err = parent.updateSymlinksFile("link1", "../target1", false)
+	t.Assert(err, IsNil)
+
+	// Replace the backend with one that always fails
+	failMock := &alwaysConflictBackend{mock}
+	parent.dir.cloud = failMock
+
+	// Flush should fail
+	err = parent.flushSymlinksChanges()
+	t.Assert(err, NotNil)
+
+	// Changes should be re-queued
+	t.Assert(len(parent.dir.pendingSymlinkChanges), Equals, 1)
+	t.Assert(parent.dir.pendingSymlinkChanges[0].Name, Equals, "link1")
+
+	// In-memory cache should still have the change
+	t.Assert(parent.dir.symlinksCache.HasSymlink("link1"), Equals, true)
+
+	_ = etag
+	parent.mu.Unlock()
+}
+
+func (s *SymlinksTest) TestFlushPendingSymlinksPublicAPI(t *C) {
+	mock := newMockConditionalBackend()
+	_, parent := newTestDirInode(mock, 1*time.Hour)
+
+	parent.mu.Lock()
+
+	// Queue changes
+	err := parent.updateSymlinksFile("link1", "../target1", false)
+	t.Assert(err, IsNil)
+	err = parent.updateSymlinksFile("link2", "../target2", false)
+	t.Assert(err, IsNil)
+
+	parent.mu.Unlock()
+
+	// Use public API (acquires lock internally)
+	err = parent.FlushPendingSymlinks()
+	t.Assert(err, IsNil)
+
+	// Verify everything was flushed
+	parent.mu.Lock()
+	t.Assert(len(parent.dir.pendingSymlinkChanges), Equals, 0)
+	parent.mu.Unlock()
+
+	obj := mock.objects[".geesefs_symlinks"]
+	t.Assert(obj, NotNil)
+	parsed, err := ParseSymlinksFile(obj.data)
+	t.Assert(err, IsNil)
+	t.Assert(parsed.HasSymlink("link1"), Equals, true)
+	t.Assert(parsed.HasSymlink("link2"), Equals, true)
+}
+
+func (s *SymlinksTest) TestFlushPendingSymlinksNoopWhenEmpty(t *C) {
+	mock := newMockConditionalBackend()
+	_, parent := newTestDirInode(mock, 1*time.Hour)
+
+	// No pending changes - should be a no-op
+	err := parent.FlushPendingSymlinks()
+	t.Assert(err, IsNil)
+
+	// No S3 calls should have been made
+	t.Assert(len(mock.objects), Equals, 0)
+}
+
+func (s *SymlinksTest) TestBatchTimerFiresAndFlushes(t *C) {
+	mock := newMockConditionalBackend()
+	_, parent := newTestDirInode(mock, 50*time.Millisecond)
+
+	parent.mu.Lock()
+
+	// Queue a change (timer should start)
+	err := parent.updateSymlinksFile("link1", "../target1", false)
+	t.Assert(err, IsNil)
+
+	// Timer should be set
+	t.Assert(parent.dir.symlinkFlushTimer, NotNil)
+
+	parent.mu.Unlock()
+
+	// Wait for timer to fire
+	time.Sleep(200 * time.Millisecond)
+
+	// Verify the flush happened
+	parent.mu.Lock()
+	t.Assert(len(parent.dir.pendingSymlinkChanges), Equals, 0)
+	parent.mu.Unlock()
+
+	obj := mock.objects[".geesefs_symlinks"]
+	t.Assert(obj, NotNil)
+	parsed, err := ParseSymlinksFile(obj.data)
+	t.Assert(err, IsNil)
+	t.Assert(parsed.HasSymlink("link1"), Equals, true)
+}
+
+func (s *SymlinksTest) TestBatchRemoveOnlySymlink(t *C) {
+	mock := newMockConditionalBackend()
+	_, parent := newTestDirInode(mock, 0) // immediate flush
+
+	parent.mu.Lock()
+
+	// Create a symlink
+	err := parent.updateSymlinksFile("link1", "../target1", false)
+	t.Assert(err, IsNil)
+
+	// Remove it
+	err = parent.updateSymlinksFile("link1", "", true)
+	t.Assert(err, IsNil)
+
+	// Empty data should have deleted the file
+	_, exists := mock.objects[".geesefs_symlinks"]
+	t.Assert(exists, Equals, false)
+
+	parent.mu.Unlock()
 }
 
