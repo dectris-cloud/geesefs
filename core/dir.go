@@ -1654,8 +1654,9 @@ func (parent *Inode) CreateSymlink(
 	return inode, nil
 }
 
-// updateSymlinksFile updates the .symlinks file in this directory
+// updateSymlinksFile updates the .symlinks file in this directory.
 // LOCKS_REQUIRED(parent.mu)
+// Note: temporarily releases parent.mu during network I/O.
 func (parent *Inode) updateSymlinksFile(name string, target string, remove bool) error {
 	cloud, dirKey := parent.cloud()
 	if cloud == nil {
@@ -1677,7 +1678,10 @@ func (parent *Inode) updateSymlinksFile(name string, target string, remove bool)
 		data = parent.dir.symlinksCache.DeepCopy()
 		etag = parent.dir.symlinksCacheETag
 	} else {
+		// Need to load from cloud — release lock during I/O
+		parent.mu.Unlock()
 		data, etag, err = LoadSymlinksFile(cloud, dirKey, symlinksFileName)
+		parent.mu.Lock()
 		if err != nil {
 			return err
 		}
@@ -1701,9 +1705,11 @@ func (parent *Inode) updateSymlinksFile(name string, target string, remove bool)
 		return currentData, nil
 	}
 
-	// Save with conditional write and retry on conflict
+	// Release lock during save I/O (may retry with exponential backoff)
 	const maxRetries = 5
+	parent.mu.Unlock()
 	newETag, err := SaveSymlinksFileWithRetry(cloud, dirKey, symlinksFileName, data, etag, mergeFn, maxRetries)
+	parent.mu.Lock()
 	if err != nil {
 		return err
 	}
@@ -1716,8 +1722,9 @@ func (parent *Inode) updateSymlinksFile(name string, target string, remove bool)
 	return nil
 }
 
-// loadSymlinksCache loads the symlinks file cache for this directory if needed
+// loadSymlinksCache loads the symlinks file cache for this directory if needed.
 // LOCKS_REQUIRED(parent.mu)
+// Note: temporarily releases parent.mu during network I/O.
 func (parent *Inode) loadSymlinksCache() error {
 	if !parent.fs.flags.EnableSymlinksFile {
 		return nil
@@ -1731,9 +1738,14 @@ func (parent *Inode) loadSymlinksCache() error {
 	dirKey = strings.TrimSuffix(dirKey, "/")
 	symlinksFileName := parent.fs.flags.SymlinksFile
 
-	// Use conditional GET with cached ETag to check if file has changed
+	// Capture cached ETag before releasing lock
 	cachedETag := parent.dir.symlinksCacheETag
+
+	// Release lock during network I/O (conditional GET)
+	parent.mu.Unlock()
 	data, etag, err := LoadSymlinksFileConditional(cloud, dirKey, symlinksFileName, cachedETag)
+	parent.mu.Lock()
+
 	if err != nil {
 		return err
 	}
