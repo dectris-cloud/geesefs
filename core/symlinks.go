@@ -250,9 +250,29 @@ func SaveSymlinksFile(cloud StorageBackend, dirKey string, symlinksFileName stri
 		return "", nil
 	}
 
-	// If there are no symlinks, delete the file
+	// If there are no symlinks, delete the file using a conditional write first
+	// to detect concurrent modifications. S3 DeleteObject doesn't support If-Match,
+	// so we write the empty data with If-Match to ensure no one else has modified
+	// the file. If another mount added a symlink in between, the write fails with
+	// 412 and the retry logic in SaveSymlinksFileWithRetry handles it correctly.
 	if data.IsEmpty() {
-		_, err := cloud.DeleteBlob(&DeleteBlobInput{Key: key})
+		content, err := data.Serialize()
+		if err != nil {
+			return "", err
+		}
+		putInput := &PutBlobInput{
+			Key:     key,
+			Body:    bytes.NewReader(content),
+			Size:    PUInt64(uint64(len(content))),
+			IfMatch: &expectedETag,
+		}
+		_, err = cloud.PutBlob(putInput)
+		if err != nil {
+			return "", err
+		}
+		// Conditional write succeeded — safe to delete since we confirmed
+		// no concurrent modification
+		_, err = cloud.DeleteBlob(&DeleteBlobInput{Key: key})
 		if err != nil && !isNotExist(err) {
 			return "", err
 		}

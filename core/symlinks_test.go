@@ -390,6 +390,28 @@ func (s *SymlinksTest) TestSaveEmptySymlinksFileDeletesExisting(t *C) {
 	t.Assert(exists, Equals, false)
 }
 
+func (s *SymlinksTest) TestSaveEmptySymlinksFileRaceDetection(t *C) {
+	mock := newMockConditionalBackend()
+
+	// Pre-create an existing file
+	mock.objects["testdir/.geesefs_symlinks"] = &mockStoredObject{
+		data: []byte(`{"version":1,"symlinks":{"link1":{"target":"../target1"}}}`),
+		etag: "\"original\"",
+	}
+
+	// Simulate another mount modifying the file before our delete
+	// by providing a stale ETag
+	emptyData := NewSymlinksFileData()
+	_, err := SaveSymlinksFile(mock, "testdir", ".geesefs_symlinks", emptyData, "\"stale\"")
+	t.Assert(err, NotNil)
+	t.Assert(isPreconditionFailed(err), Equals, true)
+
+	// File should still exist with the other mount's data
+	obj, exists := mock.objects["testdir/.geesefs_symlinks"]
+	t.Assert(exists, Equals, true)
+	t.Assert(string(obj.data), Matches, ".*link1.*")
+}
+
 func (s *SymlinksTest) TestConcurrentSymlinkCreation(t *C) {
 	mock := newMockConditionalBackend()
 
