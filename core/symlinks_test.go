@@ -16,7 +16,9 @@ package core
 
 import (
 	"fmt"
+	"syscall"
 
+	"github.com/aws/aws-sdk-go/aws/awserr"
 	. "gopkg.in/check.v1"
 )
 
@@ -752,5 +754,75 @@ func (s *SymlinksTest) TestSymlinksCacheDeleteMergesCorrectly(t *C) {
 	// Verify only link2 remains
 	t.Assert(cloudData.HasSymlink("link1"), Equals, false)
 	t.Assert(cloudData.HasSymlink("link2"), Equals, true)
+}
+
+// ============================================================================
+// Tests for error detection functions (AWS SDK typed errors + fallbacks)
+// ============================================================================
+
+func (s *SymlinksTest) TestIsNotExistWithAwsRequestFailure(t *C) {
+	// Real S3 backend returns awserr.RequestFailure with status 404
+	err := awserr.NewRequestFailure(awserr.New("NoSuchKey", "The specified key does not exist.", nil), 404, "req-123")
+	t.Assert(isNotExist(err), Equals, true)
+}
+
+func (s *SymlinksTest) TestIsNotExistWithAwsErrorCode(t *C) {
+	err := awserr.New("NoSuchKey", "key not found", nil)
+	t.Assert(isNotExist(err), Equals, true)
+
+	err = awserr.New("NotFound", "not found", nil)
+	t.Assert(isNotExist(err), Equals, true)
+}
+
+func (s *SymlinksTest) TestIsNotExistWithSyscallENOENT(t *C) {
+	t.Assert(isNotExist(syscall.ENOENT), Equals, true)
+}
+
+func (s *SymlinksTest) TestIsNotExistWithNilAndUnrelated(t *C) {
+	t.Assert(isNotExist(nil), Equals, false)
+	t.Assert(isNotExist(fmt.Errorf("error at line 404")), Equals, false)
+	t.Assert(isNotExist(fmt.Errorf("network timeout")), Equals, false)
+}
+
+func (s *SymlinksTest) TestIsPreconditionFailedWithAwsRequestFailure(t *C) {
+	err := awserr.NewRequestFailure(awserr.New("PreconditionFailed", "At least one of the pre-conditions you specified did not hold", nil), 412, "req-456")
+	t.Assert(isPreconditionFailed(err), Equals, true)
+}
+
+func (s *SymlinksTest) TestIsPreconditionFailedWithAwsErrorCode(t *C) {
+	err := awserr.New("PreconditionFailed", "precondition failed", nil)
+	t.Assert(isPreconditionFailed(err), Equals, true)
+}
+
+func (s *SymlinksTest) TestIsPreconditionFailedWithMockError(t *C) {
+	// Mock backend returns plain fmt.Errorf starting with "PreconditionFailed"
+	t.Assert(isPreconditionFailed(fmt.Errorf("PreconditionFailed: object already exists")), Equals, true)
+	t.Assert(isPreconditionFailed(fmt.Errorf("PreconditionFailed: ETag mismatch")), Equals, true)
+}
+
+func (s *SymlinksTest) TestIsPreconditionFailedWithNilAndUnrelated(t *C) {
+	t.Assert(isPreconditionFailed(nil), Equals, false)
+	t.Assert(isPreconditionFailed(fmt.Errorf("error code 412 in config")), Equals, false)
+	t.Assert(isPreconditionFailed(fmt.Errorf("network timeout")), Equals, false)
+}
+
+func (s *SymlinksTest) TestIsNotModifiedWithAwsRequestFailure(t *C) {
+	err := awserr.NewRequestFailure(awserr.New("NotModified", "Not Modified", nil), 304, "req-789")
+	t.Assert(isNotModified(err), Equals, true)
+}
+
+func (s *SymlinksTest) TestIsNotModifiedWithAwsErrorCode(t *C) {
+	err := awserr.New("NotModified", "not modified", nil)
+	t.Assert(isNotModified(err), Equals, true)
+}
+
+func (s *SymlinksTest) TestIsNotModifiedWithMockError(t *C) {
+	t.Assert(isNotModified(fmt.Errorf("304 Not Modified")), Equals, true)
+}
+
+func (s *SymlinksTest) TestIsNotModifiedWithNilAndUnrelated(t *C) {
+	t.Assert(isNotModified(nil), Equals, false)
+	t.Assert(isNotModified(fmt.Errorf("error 304 in processing")), Equals, false)
+	t.Assert(isNotModified(fmt.Errorf("network timeout")), Equals, false)
 }
 
