@@ -558,6 +558,13 @@ MISC OPTIONS:
 			Usage: "File modification time (UNIX time) metadata attribute name",
 		},
 
+		cli.StringFlag{
+			Name:  "symlink-attr",
+			Value: "--symlink-target",
+			Usage: "Symbolic link target metadata attribute name." +
+				" Only works correctly if your S3 returns UserMetadata in listings",
+		},
+
 		cli.BoolFlag{
 			Name:  "enable-symlinks-file",
 			Usage: "Store symlinks in a hidden .symlinks file per directory instead of object metadata." +
@@ -877,6 +884,7 @@ func PopulateFlags(c *cli.Context) (ret *FlagStorage) {
 		FileModeAttr:        c.String("mode-attr"),
 		RdevAttr:            c.String("rdev-attr"),
 		MtimeAttr:           c.String("mtime-attr"),
+		SymlinkAttr:         c.String("symlink-attr"),
 		SymlinksFile:        c.String("symlinks-file"),
 		EnableSymlinksFile:  c.Bool("enable-symlinks-file"),
 		HideSymlinksFile:    c.Bool("hide-symlinks-file"),
