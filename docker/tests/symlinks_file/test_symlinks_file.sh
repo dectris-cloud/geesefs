@@ -487,6 +487,162 @@ fi
 cleanup_test_folder 7
 
 # ==============================================================================
+log_header "TEST 8: Rename symlink within same directory"
+# ==============================================================================
+
+setup_test_folder 8
+
+log_info "Creating target file and symlink..."
+run_in $MOUNT1 sh -c "echo 'Rename test content' > $TEST_DIR/target.txt"
+run_in $MOUNT1 ln -sf target.txt $TEST_DIR/oldname.txt
+sync_and_wait
+
+log_info "Verifying symlink before rename..."
+CONTENT_BEFORE=$(run_in $MOUNT1 cat $TEST_DIR/oldname.txt 2>/dev/null || echo "FAILED")
+if [ "$CONTENT_BEFORE" = "Rename test content" ]; then
+    log_pass "Symlink works before rename"
+else
+    log_fail "Symlink doesn't work before rename (got: $CONTENT_BEFORE)"
+fi
+
+log_info "Checking .geesefs_symlinks before rename..."
+SYMLINKS_BEFORE=$(get_symlinks_file_s3 "test8")
+echo "  Content before rename:"
+echo "$SYMLINKS_BEFORE" | sed 's/^/    /'
+
+log_info "Renaming symlink: oldname.txt -> newname.txt"
+run_in $MOUNT1 mv $TEST_DIR/oldname.txt $TEST_DIR/newname.txt
+sync_and_wait
+
+log_info "Verifying renamed symlink works..."
+CONTENT_AFTER=$(run_in $MOUNT1 cat $TEST_DIR/newname.txt 2>/dev/null || echo "FAILED")
+if [ "$CONTENT_AFTER" = "Rename test content" ]; then
+    log_pass "Renamed symlink works in container 1"
+else
+    log_fail "Renamed symlink doesn't work in container 1 (got: $CONTENT_AFTER)"
+fi
+
+log_info "Verifying old name no longer exists..."
+if run_in $MOUNT1 test -e $TEST_DIR/oldname.txt 2>/dev/null; then
+    log_fail "Old symlink name still exists after rename"
+else
+    log_pass "Old symlink name removed after rename"
+fi
+
+log_info "Checking .geesefs_symlinks after rename..."
+SYMLINKS_AFTER=$(get_symlinks_file_s3 "test8")
+echo "  Content after rename:"
+echo "$SYMLINKS_AFTER" | sed 's/^/    /'
+
+if echo "$SYMLINKS_AFTER" | grep -q "newname.txt"; then
+    log_pass ".geesefs_symlinks contains newname.txt"
+else
+    log_fail ".geesefs_symlinks missing newname.txt"
+fi
+
+if echo "$SYMLINKS_AFTER" | grep -q "oldname.txt"; then
+    log_fail ".geesefs_symlinks still contains oldname.txt"
+else
+    log_pass ".geesefs_symlinks no longer contains oldname.txt"
+fi
+
+log_info "Waiting for cache refresh in container 2..."
+sleep 5
+run_in $MOUNT2 ls -la $TEST_DIR/ >/dev/null 2>&1 || true
+sleep 2
+
+log_info "Checking renamed symlink visibility in container 2..."
+CONTENT_M2=$(run_in $MOUNT2 cat $TEST_DIR/newname.txt 2>/dev/null || echo "FAILED")
+if [ "$CONTENT_M2" = "Rename test content" ]; then
+    log_pass "Renamed symlink visible and works in container 2"
+else
+    log_fail "Renamed symlink not working in container 2 (got: $CONTENT_M2)"
+fi
+
+cleanup_test_folder 8
+
+# ==============================================================================
+log_header "TEST 9: Rename symlink to different directory"
+# ==============================================================================
+
+setup_test_folder 9
+
+log_info "Creating source and destination directories..."
+run_in $MOUNT1 mkdir -p $TEST_DIR/srcdir
+run_in $MOUNT1 mkdir -p $TEST_DIR/dstdir
+run_in $MOUNT1 sh -c "echo 'Cross-dir rename content' > $TEST_DIR/srcdir/target.txt"
+run_in $MOUNT1 sh -c "echo 'Cross-dir rename content' > $TEST_DIR/dstdir/target.txt"
+run_in $MOUNT1 ln -sf target.txt $TEST_DIR/srcdir/link.txt
+sync_and_wait
+
+log_info "Verifying symlink in source dir before rename..."
+CONTENT_SRC=$(run_in $MOUNT1 cat $TEST_DIR/srcdir/link.txt 2>/dev/null || echo "FAILED")
+if [ "$CONTENT_SRC" = "Cross-dir rename content" ]; then
+    log_pass "Symlink works in source dir before rename"
+else
+    log_fail "Symlink doesn't work in source dir (got: $CONTENT_SRC)"
+fi
+
+log_info "Checking source .geesefs_symlinks before rename..."
+SRC_SYMLINKS=$(get_symlinks_file_s3 "test9/srcdir")
+echo "  Source before rename:"
+echo "$SRC_SYMLINKS" | sed 's/^/    /'
+
+log_info "Renaming symlink from srcdir to dstdir..."
+run_in $MOUNT1 mv $TEST_DIR/srcdir/link.txt $TEST_DIR/dstdir/link.txt
+sync_and_wait
+
+log_info "Verifying symlink removed from source dir..."
+if run_in $MOUNT1 test -e $TEST_DIR/srcdir/link.txt 2>/dev/null; then
+    log_fail "Symlink still exists in source dir after rename"
+else
+    log_pass "Symlink removed from source dir after rename"
+fi
+
+log_info "Verifying symlink works in destination dir..."
+CONTENT_DST=$(run_in $MOUNT1 cat $TEST_DIR/dstdir/link.txt 2>/dev/null || echo "FAILED")
+if [ "$CONTENT_DST" = "Cross-dir rename content" ]; then
+    log_pass "Renamed symlink works in destination dir"
+else
+    log_fail "Renamed symlink doesn't work in destination dir (got: $CONTENT_DST)"
+fi
+
+log_info "Checking .geesefs_symlinks in source dir after rename..."
+SRC_AFTER=$(get_symlinks_file_s3 "test9/srcdir")
+if [ -z "$SRC_AFTER" ] || ! echo "$SRC_AFTER" | grep -q "link.txt"; then
+    log_pass "Source .geesefs_symlinks no longer contains link.txt"
+else
+    log_fail "Source .geesefs_symlinks still contains link.txt"
+    echo "  Content:"
+    echo "$SRC_AFTER" | sed 's/^/    /'
+fi
+
+log_info "Checking .geesefs_symlinks in destination dir after rename..."
+DST_AFTER=$(get_symlinks_file_s3 "test9/dstdir")
+if echo "$DST_AFTER" | grep -q "link.txt"; then
+    log_pass "Destination .geesefs_symlinks contains link.txt"
+else
+    log_fail "Destination .geesefs_symlinks missing link.txt"
+fi
+echo "  Content:"
+echo "$DST_AFTER" | sed 's/^/    /'
+
+log_info "Waiting for cache refresh in container 2..."
+sleep 5
+run_in $MOUNT2 ls -la $TEST_DIR/dstdir/ >/dev/null 2>&1 || true
+sleep 2
+
+log_info "Checking cross-dir renamed symlink visibility in container 2..."
+CONTENT_M2=$(run_in $MOUNT2 cat $TEST_DIR/dstdir/link.txt 2>/dev/null || echo "FAILED")
+if [ "$CONTENT_M2" = "Cross-dir rename content" ]; then
+    log_pass "Cross-dir renamed symlink visible and works in container 2"
+else
+    log_fail "Cross-dir renamed symlink not working in container 2 (got: $CONTENT_M2)"
+fi
+
+cleanup_test_folder 9
+
+# ==============================================================================
 log_header "TEST SUMMARY"
 # ==============================================================================
 

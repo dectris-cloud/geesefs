@@ -2012,6 +2012,43 @@ func (parent *Inode) Rename(from string, newParent *Inode, to string) (err error
 		}
 	}
 
+	// Handle virtual symlink rename: update .geesefs_symlinks files, no S3 object to move
+	if parent.fs.flags.EnableSymlinksFile {
+		isSymlink := fromInode.userMetadata != nil && fromInode.userMetadata[parent.fs.flags.SymlinkAttr] != nil
+		if isSymlink {
+			target := string(fromInode.userMetadata[parent.fs.flags.SymlinkAttr])
+
+			// Remove from source directory's symlinks file
+			if err := parent.updateSymlinksFile(from, "", true); err != nil {
+				s3Log.Warnf("Failed to update source symlinks file for rename %v: %v", from, err)
+			}
+
+			// Add to destination directory's symlinks file
+			if err := newParent.updateSymlinksFile(to, target, false); err != nil {
+				return err
+			}
+
+			// If target inode exists at destination, clean it up
+			if toInode != nil {
+				toInode.mu.Lock()
+				newParent.removeChildUnlocked(toInode)
+				toInode.resetCache()
+				toInode.SetCacheState(ST_DEAD)
+				toInode.mu.Unlock()
+			}
+
+			// Move the inode in the tree (ref/deref to keep counts balanced)
+			fromInode.Ref()
+			parent.removeChildUnlocked(fromInode)
+			fromInode.Name = to
+			fromInode.Parent = newParent
+			newParent.insertChildUnlocked(fromInode)
+			fromInode.DeRef(1)
+
+			return nil
+		}
+	}
+
 	fromFullName := appendChildName(fromPath, from)
 	toFullName := appendChildName(toPath, to)
 
