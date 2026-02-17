@@ -23,6 +23,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/aws/aws-sdk-go/aws/awserr"
 )
 
 // SymlinkEntry represents a single symlink in the .symlinks file
@@ -225,10 +227,15 @@ func isNotModified(err error) bool {
 	if err == nil {
 		return false
 	}
-	errStr := err.Error()
-	return strings.Contains(errStr, "304") ||
-		strings.Contains(errStr, "NotModified") ||
-		strings.Contains(errStr, "Not Modified")
+	// AWS SDK typed error (real S3 backend)
+	if reqErr, ok := err.(awserr.RequestFailure); ok {
+		return reqErr.StatusCode() == 304
+	}
+	if awsErr, ok := err.(awserr.Error); ok {
+		return awsErr.Code() == "NotModified"
+	}
+	// Fallback for non-AWS backends (e.g., mock in tests)
+	return err.Error() == "304 Not Modified"
 }
 
 
@@ -299,11 +306,17 @@ func isPreconditionFailed(err error) bool {
 	if err == nil {
 		return false
 	}
+	// AWS SDK typed error (real S3 backend)
+	if reqErr, ok := err.(awserr.RequestFailure); ok {
+		return reqErr.StatusCode() == 412
+	}
+	if awsErr, ok := err.(awserr.Error); ok {
+		return awsErr.Code() == "PreconditionFailed"
+	}
+	// Fallback for non-AWS backends (e.g., mock in tests):
+	// match errors that start with "PreconditionFailed"
 	errStr := err.Error()
-	return strings.Contains(errStr, "PreconditionFailed") ||
-		strings.Contains(errStr, "412") ||
-		strings.Contains(errStr, "Precondition Failed") ||
-		strings.Contains(errStr, "conditional request failed")
+	return len(errStr) >= 18 && errStr[:18] == "PreconditionFailed"
 }
 
 // SaveSymlinksFileWithRetry saves the .symlinks file with automatic retry on conflict.
@@ -403,14 +416,15 @@ func isNotExist(err error) bool {
 	if err == nil {
 		return false
 	}
-	// Check for syscall error
 	if err == syscall.ENOENT {
 		return true
 	}
-	errStr := err.Error()
-	return strings.Contains(errStr, "NoSuchKey") ||
-		strings.Contains(errStr, "NotFound") ||
-		strings.Contains(errStr, "404") ||
-		strings.Contains(errStr, "does not exist") ||
-		strings.Contains(errStr, "no such file or directory")
+	// AWS SDK typed error (real S3 backend)
+	if reqErr, ok := err.(awserr.RequestFailure); ok {
+		return reqErr.StatusCode() == 404
+	}
+	if awsErr, ok := err.(awserr.Error); ok {
+		return awsErr.Code() == "NoSuchKey" || awsErr.Code() == "NotFound"
+	}
+	return false
 }
