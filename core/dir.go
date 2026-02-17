@@ -469,6 +469,7 @@ func (dh *DirHandle) handleListResult(resp *ListBlobsOutput, prefix string, skip
 							inode.userMetadata = make(map[string][]byte)
 						}
 						inode.userMetadata[fs.flags.SymlinkAttr] = []byte(target)
+						inode.isVirtualSymlink = true
 						inode.mu.Unlock()
 					}
 				}
@@ -487,6 +488,7 @@ func (dh *DirHandle) handleListResult(resp *ListBlobsOutput, prefix string, skip
 								inode.userMetadata = make(map[string][]byte)
 							}
 							inode.userMetadata[fs.flags.SymlinkAttr] = []byte(target)
+							inode.isVirtualSymlink = true
 							inode.mu.Unlock()
 						}
 					}
@@ -544,6 +546,7 @@ func (parent *Inode) createVirtualSymlinksFromCache() []interface{} {
 			wasSymlink := oldTarget != ""
 			// Always update the symlink target from the cache (another mount may have changed it)
 			existingInode.userMetadata[fs.flags.SymlinkAttr] = []byte(entry.Target)
+			existingInode.isVirtualSymlink = true
 			existingInode.mu.Unlock()
 			s3Log.Debugf("createVirtualSymlinksFromCache: updated existing inode %v, oldTarget=%q newTarget=%q wasSymlink=%v",
 				name, oldTarget, entry.Target, wasSymlink)
@@ -564,6 +567,7 @@ func (parent *Inode) createVirtualSymlinksFromCache() []interface{} {
 		inode := NewInode(fs, parent, name)
 		inode.userMetadata = make(map[string][]byte)
 		inode.userMetadata[fs.flags.SymlinkAttr] = []byte(entry.Target)
+		inode.isVirtualSymlink = true
 		inode.Attributes = InodeAttributes{
 			Size:  0,
 			Mtime: time.Unix(entry.Mtime, 0),
@@ -608,7 +612,7 @@ func (parent *Inode) syncVirtualSymlinksFromCache() {
 	for i := 0; i < len(parent.dir.Children); i++ {
 		child := parent.dir.Children[i]
 		child.mu.Lock()
-		isVirtual := child.userMetadata != nil && child.userMetadata[fs.flags.SymlinkAttr] != nil &&
+		isVirtual := child.isVirtualSymlink &&
 			atomic.LoadInt32(&child.CacheState) == ST_CACHED
 		child.mu.Unlock()
 		if !isVirtual {
@@ -959,7 +963,7 @@ func (parent *Inode) removeExpired(from string) {
 		// check if they still exist in the symlinks cache
 		if parent.fs.flags.EnableSymlinksFile {
 			childTmp.mu.Lock()
-			isVirtualSymlink := childTmp.userMetadata != nil && childTmp.userMetadata[parent.fs.flags.SymlinkAttr] != nil
+			isVirtualSymlink := childTmp.isVirtualSymlink
 			childTmp.mu.Unlock()
 			if isVirtualSymlink {
 				// Check if symlink still exists in cache (cache was refreshed in loadListing)
@@ -1343,12 +1347,12 @@ func (parent *Inode) Unlink(name string) (err error) {
 	if inode != nil {
 		fuseLog.Debugf("Unlink %v", inode.FullName())
 
-		// If this is a symlink and using symlinks file, update the file
+		// If this is a virtual symlink (stored in .geesefs_symlinks, no S3 object), update the file
 		if parent.fs.flags.EnableSymlinksFile {
 			inode.mu.Lock()
-			isSymlink := inode.userMetadata != nil && inode.userMetadata[parent.fs.flags.SymlinkAttr] != nil
+			isVirtual := inode.isVirtualSymlink
 			inode.mu.Unlock()
-			if isSymlink {
+			if isVirtual {
 				if err := parent.updateSymlinksFile(name, "", true); err != nil {
 					s3Log.Warnf("Failed to update symlinks file for unlink %v: %v", name, err)
 					// Continue anyway, the symlink entry will be orphaned but the file will be deleted
@@ -1623,6 +1627,7 @@ func (parent *Inode) CreateSymlink(
 			return nil, err
 		}
 		inode.userMetadataDirty = 0
+		inode.isVirtualSymlink = true
 	} else {
 		inode.userMetadataDirty = 2
 	}
@@ -2014,8 +2019,7 @@ func (parent *Inode) Rename(from string, newParent *Inode, to string) (err error
 
 	// Handle virtual symlink rename: update .geesefs_symlinks files, no S3 object to move
 	if parent.fs.flags.EnableSymlinksFile {
-		isSymlink := fromInode.userMetadata != nil && fromInode.userMetadata[parent.fs.flags.SymlinkAttr] != nil
-		if isSymlink {
+		if fromInode.isVirtualSymlink {
 			target := string(fromInode.userMetadata[parent.fs.flags.SymlinkAttr])
 
 			// Remove from source directory's symlinks file
@@ -2342,8 +2346,9 @@ func (parent *Inode) LookUpCached(name string) (inode *Inode, err error) {
 		if inode != nil {
 			inode.mu.Lock()
 			hasSymlinkAttr := inode.userMetadata != nil && inode.userMetadata[parent.fs.flags.SymlinkAttr] != nil
+			isVirtual := inode.isVirtualSymlink
 			inode.mu.Unlock()
-			s3Log.Debugf("LookUpCached: inode=%v hasSymlinkAttr=%v", inode.Name, hasSymlinkAttr)
+			s3Log.Debugf("LookUpCached: inode=%v hasSymlinkAttr=%v isVirtualSymlink=%v", inode.Name, hasSymlinkAttr, isVirtual)
 		}
 	}
 
@@ -2383,6 +2388,7 @@ func (parent *Inode) LookUpCached(name string) (inode *Inode, err error) {
 				inode = NewInode(parent.fs, parent, name)
 				inode.userMetadata = make(map[string][]byte)
 				inode.userMetadata[parent.fs.flags.SymlinkAttr] = []byte(target)
+				inode.isVirtualSymlink = true
 				now := time.Now()
 				inode.Attributes = InodeAttributes{
 					Size:  0,
@@ -2455,6 +2461,7 @@ func (parent *Inode) LookUp(name string, doSlurp bool) (*Inode, error) {
 					inode = NewInode(parent.fs, parent, name)
 					inode.userMetadata = make(map[string][]byte)
 					inode.userMetadata[parent.fs.flags.SymlinkAttr] = []byte(target)
+					inode.isVirtualSymlink = true
 					now := time.Now()
 					inode.Attributes = InodeAttributes{
 						Size:  0,
@@ -2473,6 +2480,7 @@ func (parent *Inode) LookUp(name string, doSlurp bool) (*Inode, error) {
 						inode.userMetadata = make(map[string][]byte)
 					}
 					inode.userMetadata[parent.fs.flags.SymlinkAttr] = []byte(target)
+					inode.isVirtualSymlink = true
 					inode.SetAttrTime(time.Now())
 					inode.mu.Unlock()
 				}
@@ -2498,6 +2506,7 @@ func (parent *Inode) LookUp(name string, doSlurp bool) (*Inode, error) {
 				inode = NewInode(parent.fs, parent, name)
 				inode.userMetadata = make(map[string][]byte)
 				inode.userMetadata[parent.fs.flags.SymlinkAttr] = []byte(target)
+				inode.isVirtualSymlink = true
 				now := time.Now()
 				inode.Attributes = InodeAttributes{
 					Size:  0,
@@ -2516,6 +2525,7 @@ func (parent *Inode) LookUp(name string, doSlurp bool) (*Inode, error) {
 					inode.userMetadata = make(map[string][]byte)
 				}
 				inode.userMetadata[parent.fs.flags.SymlinkAttr] = []byte(target)
+				inode.isVirtualSymlink = true
 				inode.SetAttrTime(time.Now())
 				inode.mu.Unlock()
 			}
