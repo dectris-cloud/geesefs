@@ -1545,16 +1545,22 @@ func (inode *Inode) flushSmallObject() {
 	inode.mu.Unlock()
 }
 
-func (inode *Inode) copyUnmodifiedParts(numParts uint64) (err error) {
+func (inode *Inode) copyUnmodifiedParts(numParts, finalSize uint64) (err error) {
 	maxMerge := inode.fs.flags.MaxMergeCopyMB * 1024 * 1024
 
-	// First collect ranges of nil (unuploaded) parts
+	// First collect ranges of nil (unuploaded) parts.
+	// partRange() returns the full partition size for every part, but the
+	// last part of the file is typically shorter. Cap partEnd to finalSize
+	// so copy ranges never extend beyond the actual object boundary.
 	var ranges []uint64
 	var startPart, endPart uint64
 	var startOffset, endOffset uint64
 	for i := uint64(0); i < numParts; i++ {
 		partOffset, partSize := inode.fs.partRange(i)
 		partEnd := partOffset + partSize
+		if partEnd > finalSize {
+			partEnd = finalSize
+		}
 		if inode.mpu.Parts[i] == nil {
 			if endPart == 0 {
 				startPart, startOffset = i, partOffset
@@ -1584,9 +1590,8 @@ func (inode *Inode) copyUnmodifiedParts(numParts uint64) (err error) {
 		var wg sync.WaitGroup
 		inode.mu.Unlock()
 		// HeadBlob to get the actual S3 source object size.
-		// knownSize/mpuSourceSize can diverge from reality (e.g. after a
-		// completed MPU whose actual size differs from the local file size),
-		// so we always verify with a HEAD request.
+		// finalSize/local state can diverge from reality in conflict scenarios,
+		// so verify with HEAD and clip copy ranges to sourceSize.
 		var sourceSize uint64
 		headResp, headErr := cloud.HeadBlob(&HeadBlobInput{Key: key})
 		if headErr == nil {
@@ -1603,7 +1608,7 @@ func (inode *Inode) copyUnmodifiedParts(numParts uint64) (err error) {
 		for i := 0; i < len(ranges); i += 3 {
 			offset := ranges[i+1]
 			size := ranges[i+2]
-			// Clip copy range to the actual source object size
+			// Clip copy range to actual source object boundaries
 			if offset >= sourceSize {
 				continue
 			}
@@ -1633,6 +1638,12 @@ func (inode *Inode) copyUnmodifiedParts(numParts uint64) (err error) {
 						Size:       size,
 					})
 					if requestErr != nil {
+						// Treat stale source-size races as a conflict, not a hard EINVAL
+						if mapAwsError(requestErr) == syscall.EINVAL &&
+							strings.Contains(requestErr.Error(), "InvalidArgument") &&
+							strings.Contains(requestErr.Error(), "Range specified is not valid for source object of size") {
+							requestErr = syscall.ERANGE
+						}
 						log.Warnf("Failed to copy unmodified range %v-%v MB of object %v: %v",
 							offset/1024/1024, (offset+size+1024*1024-1)/1024/1024, key, requestErr)
 						err = requestErr
@@ -1764,7 +1775,7 @@ func (inode *Inode) completeMultipart(finalSize uint64) {
 	if numPartOffset < finalSize {
 		numParts++
 	}
-	err := inode.copyUnmodifiedParts(numParts)
+	err := inode.copyUnmodifiedParts(numParts, finalSize)
 	if !(inode.CacheState == ST_CREATED || inode.CacheState == ST_MODIFIED) {
 		// State changed, abort this flush (even if we get ENOENT)
 		return
