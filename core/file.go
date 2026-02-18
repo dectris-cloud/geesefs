@@ -1003,7 +1003,6 @@ func (inode *Inode) beginMultipartUpload(cloud StorageBackend, key string) {
 	} else {
 		log.Debugf("Started multi-part upload of object %v", key)
 		inode.mpu = resp
-		inode.mpuSourceSize = inode.knownSize
 	}
 }
 
@@ -1549,25 +1548,13 @@ func (inode *Inode) flushSmallObject() {
 func (inode *Inode) copyUnmodifiedParts(numParts uint64) (err error) {
 	maxMerge := inode.fs.flags.MaxMergeCopyMB * 1024 * 1024
 
-	// First collect ranges to be unaffected by sudden parallel changes
+	// First collect ranges of nil (unuploaded) parts
 	var ranges []uint64
 	var startPart, endPart uint64
 	var startOffset, endOffset uint64
 	for i := uint64(0); i < numParts; i++ {
 		partOffset, partSize := inode.fs.partRange(i)
-		// Skip parts that start at or beyond the source object size — they
-		// don't exist in S3 and can't be server-side copied.
-		// Use mpuSourceSize (captured at MPU begin) instead of knownSize,
-		// because knownSize grows as parts are flushed via updateFromFlush.
-		if partOffset >= inode.mpuSourceSize {
-			break
-		}
 		partEnd := partOffset + partSize
-		// Clip to the source object size so UploadPartCopy doesn't request
-		// a range beyond the actual S3 object
-		if partEnd > inode.mpuSourceSize {
-			partEnd = inode.mpuSourceSize
-		}
 		if inode.mpu.Parts[i] == nil {
 			if endPart == 0 {
 				startPart, startOffset = i, partOffset
@@ -1596,7 +1583,33 @@ func (inode *Inode) copyUnmodifiedParts(numParts uint64) (err error) {
 		guard := make(chan int, inode.fs.flags.MaxParallelCopy)
 		var wg sync.WaitGroup
 		inode.mu.Unlock()
+		// HeadBlob to get the actual S3 source object size.
+		// knownSize/mpuSourceSize can diverge from reality (e.g. after a
+		// completed MPU whose actual size differs from the local file size),
+		// so we always verify with a HEAD request.
+		var sourceSize uint64
+		headResp, headErr := cloud.HeadBlob(&HeadBlobInput{Key: key})
+		if headErr == nil {
+			sourceSize = headResp.Size
+		} else if mapAwsError(headErr) == syscall.ENOENT {
+			// Source object does not exist — nothing to copy
+			inode.mu.Lock()
+			return nil
+		} else {
+			log.Warnf("HeadBlob failed for %v during copyUnmodifiedParts: %v", key, headErr)
+			inode.mu.Lock()
+			return headErr
+		}
 		for i := 0; i < len(ranges); i += 3 {
+			offset := ranges[i+1]
+			size := ranges[i+2]
+			// Clip copy range to the actual source object size
+			if offset >= sourceSize {
+				continue
+			}
+			if offset+size > sourceSize {
+				size = sourceSize - offset
+			}
 			guard <- i
 			if err != nil {
 				break
@@ -1629,7 +1642,7 @@ func (inode *Inode) copyUnmodifiedParts(numParts uint64) (err error) {
 				}
 				wg.Done()
 				<-guard
-			}(uint64(ranges[i]), uint64(ranges[i+1]), uint64(ranges[i+2]))
+			}(uint64(ranges[i]), offset, size)
 		}
 		wg.Wait()
 		inode.mu.Lock()

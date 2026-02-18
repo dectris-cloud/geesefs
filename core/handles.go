@@ -140,10 +140,6 @@ type Inode struct {
 	knownSize uint64
 	knownETag string
 
-	// size of the S3 source object when the multipart upload was initiated,
-	// used to clip UploadPartCopy ranges (knownSize grows as parts flush)
-	mpuSourceSize uint64
-
 	// the refcnt is an exception, it's protected with atomic access
 	// being part of parent.dir.Children increases refcnt by 1
 	refcnt int64
