@@ -745,13 +745,19 @@ func (inode *Inode) sendUpload(priority int) bool {
 	canComplete = canComplete && !inode.IsRangeLocked(0, inode.Attributes.Size, true)
 
 	if canComplete && (inode.fileHandles == 0 || inode.forceFlush || atomic.LoadInt32(&inode.fs.wantFree) > 0) {
+		// Capture finalSize now while we hold the lock and all parts are
+		// verified flushed.  Reading Attributes.Size later (after the
+		// goroutine re-acquires the lock) would race with concurrent
+		// writes that extend the file, producing a finalSize that
+		// includes parts not yet uploaded.
+		finalSize := inode.Attributes.Size
 		// Complete the multipart upload
 		inode.IsFlushing += inode.fs.flags.MaxParallelParts
 		atomic.AddInt64(&inode.fs.stats.flushes, 1)
 		atomic.AddInt64(&inode.fs.activeFlushers, 1)
 		go func() {
 			inode.mu.Lock()
-			inode.completeMultipart()
+			inode.completeMultipart(finalSize)
 			inode.IsFlushing -= inode.fs.flags.MaxParallelParts
 			inode.mu.Unlock()
 			atomic.AddInt64(&inode.fs.activeFlushers, -1)
@@ -1731,13 +1737,12 @@ func (inode *Inode) flushPart(part uint64) {
 }
 
 // LOCKS_REQUIRED(inode.mu)
-func (inode *Inode) completeMultipart() {
+func (inode *Inode) completeMultipart(finalSize uint64) {
 	// Server-side copy unmodified parts
 	if inode.mpu == nil {
 		// Multipart upload was canceled in the meantime (by a parallel conflict) => do not complete
 		return
 	}
-	finalSize := inode.Attributes.Size
 	numParts := inode.fs.partNum(finalSize)
 	numPartOffset, _ := inode.fs.partRange(numParts)
 	if numPartOffset < finalSize {
