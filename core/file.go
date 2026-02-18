@@ -1003,6 +1003,7 @@ func (inode *Inode) beginMultipartUpload(cloud StorageBackend, key string) {
 	} else {
 		log.Debugf("Started multi-part upload of object %v", key)
 		inode.mpu = resp
+		inode.mpuSourceSize = inode.knownSize
 	}
 }
 
@@ -1555,15 +1556,17 @@ func (inode *Inode) copyUnmodifiedParts(numParts uint64) (err error) {
 	for i := uint64(0); i < numParts; i++ {
 		partOffset, partSize := inode.fs.partRange(i)
 		// Skip parts that start at or beyond the source object size — they
-		// don't exist in S3 and can't be server-side copied
-		if partOffset >= inode.knownSize {
+		// don't exist in S3 and can't be server-side copied.
+		// Use mpuSourceSize (captured at MPU begin) instead of knownSize,
+		// because knownSize grows as parts are flushed via updateFromFlush.
+		if partOffset >= inode.mpuSourceSize {
 			break
 		}
 		partEnd := partOffset + partSize
-		// Clip to the source object size, not Attributes.Size, because the
-		// file may have grown locally beyond the S3 object
-		if partEnd > inode.knownSize {
-			partEnd = inode.knownSize
+		// Clip to the source object size so UploadPartCopy doesn't request
+		// a range beyond the actual S3 object
+		if partEnd > inode.mpuSourceSize {
+			partEnd = inode.mpuSourceSize
 		}
 		if inode.mpu.Parts[i] == nil {
 			if endPart == 0 {
