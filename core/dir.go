@@ -1120,6 +1120,10 @@ func (inode *Inode) ResetForUnmount() {
 		inode.dir.symlinkFlushTimer.Stop()
 		inode.dir.symlinkFlushTimer = nil
 	}
+	// Drop pending symlink queue bookkeeping for this directory.
+	inode.dir.pendingSymlinkChanges = nil
+	inode.dir.symlinkFlushETag = ""
+	inode.unmarkPendingSymlinkDirActiveLocked()
 	// First reset the cloud info for this directory. After that, any read and
 	// write operations under this directory will not know about this cloud.
 	inode.dir.cloud = nil
@@ -1651,6 +1655,33 @@ func (parent *Inode) CreateSymlink(
 	return inode, nil
 }
 
+// markPendingSymlinkDirActiveLocked adds this directory to the FS-level
+// pending-symlink index.
+// LOCKS_REQUIRED(parent.mu)
+func (parent *Inode) markPendingSymlinkDirActiveLocked() {
+	if parent == nil || parent.fs == nil || parent.Id == 0 {
+		return
+	}
+	parent.fs.mu.Lock()
+	if parent.fs.activeSymlinkFlushDirs == nil {
+		parent.fs.activeSymlinkFlushDirs = make(map[fuseops.InodeID]*Inode)
+	}
+	parent.fs.activeSymlinkFlushDirs[parent.Id] = parent
+	parent.fs.mu.Unlock()
+}
+
+// unmarkPendingSymlinkDirActiveLocked removes this directory from the FS-level
+// pending-symlink index.
+// LOCKS_REQUIRED(parent.mu)
+func (parent *Inode) unmarkPendingSymlinkDirActiveLocked() {
+	if parent == nil || parent.fs == nil || parent.Id == 0 {
+		return
+	}
+	parent.fs.mu.Lock()
+	delete(parent.fs.activeSymlinkFlushDirs, parent.Id)
+	parent.fs.mu.Unlock()
+}
+
 // updateSymlinksFile updates the .symlinks file in this directory.
 // When SymlinksBatchDelay > 0, the in-memory cache is updated eagerly
 // and the S3 PUT is deferred. When SymlinksBatchDelay == 0, the S3 PUT
@@ -1683,6 +1714,9 @@ func (parent *Inode) updateSymlinksFile(name string, target string, remove bool)
 
 	if parent.fs.flags.SymlinksBatchDelay == 0 {
 		// Batching disabled: flush immediately
+		if len(parent.dir.pendingSymlinkChanges) == 0 {
+			parent.markPendingSymlinkDirActiveLocked()
+		}
 		parent.dir.pendingSymlinkChanges = append(parent.dir.pendingSymlinkChanges,
 			PendingSymlinkChange{Name: name, Target: target, Remove: remove})
 		if parent.dir.symlinkFlushETag == "" && parent.dir.symlinksCacheETag != "" {
@@ -1695,6 +1729,7 @@ func (parent *Inode) updateSymlinksFile(name string, target string, remove bool)
 	if len(parent.dir.pendingSymlinkChanges) == 0 {
 		// Capture ETag at time first change is queued
 		parent.dir.symlinkFlushETag = parent.dir.symlinksCacheETag
+		parent.markPendingSymlinkDirActiveLocked()
 	}
 	parent.dir.pendingSymlinkChanges = append(parent.dir.pendingSymlinkChanges,
 		PendingSymlinkChange{Name: name, Target: target, Remove: remove})
@@ -1724,6 +1759,7 @@ func (parent *Inode) flushSymlinksChanges() error {
 	// Snapshot and clear pending changes
 	changes := parent.dir.pendingSymlinkChanges
 	parent.dir.pendingSymlinkChanges = nil
+	parent.unmarkPendingSymlinkDirActiveLocked()
 	etag := parent.dir.symlinkFlushETag
 	parent.dir.symlinkFlushETag = ""
 
@@ -1758,6 +1794,7 @@ func (parent *Inode) flushSymlinksChanges() error {
 	if err != nil {
 		// Re-queue failed changes at the front so they are retried
 		parent.dir.pendingSymlinkChanges = append(changes, parent.dir.pendingSymlinkChanges...)
+		parent.markPendingSymlinkDirActiveLocked()
 		if parent.dir.symlinkFlushETag == "" {
 			parent.dir.symlinkFlushETag = etag
 		}
@@ -1798,6 +1835,7 @@ func (parent *Inode) FlushPendingSymlinks() error {
 	parent.mu.Lock()
 	defer parent.mu.Unlock()
 	if parent.dir == nil || len(parent.dir.pendingSymlinkChanges) == 0 {
+		parent.unmarkPendingSymlinkDirActiveLocked()
 		return nil
 	}
 	return parent.flushSymlinksChanges()
