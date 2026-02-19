@@ -745,11 +745,9 @@ func (inode *Inode) sendUpload(priority int) bool {
 	canComplete = canComplete && !inode.IsRangeLocked(0, inode.Attributes.Size, true)
 
 	if canComplete && (inode.fileHandles == 0 || inode.forceFlush || atomic.LoadInt32(&inode.fs.wantFree) > 0) {
-		// Capture finalSize now while we hold the lock and all parts are
-		// verified flushed.  Reading Attributes.Size later (after the
-		// goroutine re-acquires the lock) would race with concurrent
-		// writes that extend the file, producing a finalSize that
-		// includes parts not yet uploaded.
+		// Capture finalSize now while we hold inode.mu and all parts are
+		// verified flushed. Reading Attributes.Size later can race with
+		// concurrent writes that extend the file and include parts not yet uploaded.
 		finalSize := inode.Attributes.Size
 		// Complete the multipart upload
 		inode.IsFlushing += inode.fs.flags.MaxParallelParts
@@ -1551,10 +1549,11 @@ func (inode *Inode) copyUnmodifiedParts(numParts, finalSize uint64) (err error) 
 	// First collect ranges of nil (unuploaded) parts.
 	// partRange() returns the full partition size for every part, but the
 	// last part of the file is typically shorter. Cap partEnd to finalSize
-	// so copy ranges never extend beyond the actual object boundary.
+	// so copy ranges never extend beyond the intended final object boundary.
 	var ranges []uint64
 	var startPart, endPart uint64
 	var startOffset, endOffset uint64
+	var maxRequiredSource uint64
 	for i := uint64(0); i < numParts; i++ {
 		partOffset, partSize := inode.fs.partRange(i)
 		partEnd := partOffset + partSize
@@ -1566,6 +1565,9 @@ func (inode *Inode) copyUnmodifiedParts(numParts, finalSize uint64) (err error) 
 				startPart, startOffset = i, partOffset
 			}
 			endPart, endOffset = i+1, partEnd
+			if endOffset > maxRequiredSource {
+				maxRequiredSource = endOffset
+			}
 			if endOffset-startOffset >= maxMerge {
 				ranges = append(ranges, startPart, startOffset, endOffset-startOffset)
 				startPart, endPart = 0, 0
@@ -1589,7 +1591,7 @@ func (inode *Inode) copyUnmodifiedParts(numParts, finalSize uint64) (err error) 
 		guard := make(chan int, inode.fs.flags.MaxParallelCopy)
 		var wg sync.WaitGroup
 		inode.mu.Unlock()
-		// HeadBlob to get the actual S3 source object size.
+		// HeadBlob to get the actual source object size before UploadPartCopy.
 		// finalSize/local state can diverge from reality in conflict scenarios,
 		// so verify with HEAD and clip copy ranges to sourceSize.
 		var sourceSize uint64
@@ -1605,10 +1607,20 @@ func (inode *Inode) copyUnmodifiedParts(numParts, finalSize uint64) (err error) 
 			inode.mu.Lock()
 			return headErr
 		}
+		// Fail fast: if pending unmodified-copy ranges require bytes beyond
+		// the source object, copying cannot produce a consistent final object.
+		if maxRequiredSource > sourceSize {
+			log.Warnf(
+				"Source object %v is smaller than required for unmodified copy (source=%v, required=%v), treating as conflict",
+				key, sourceSize, maxRequiredSource,
+			)
+			inode.mu.Lock()
+			return syscall.ERANGE
+		}
 		for i := 0; i < len(ranges); i += 3 {
 			offset := ranges[i+1]
 			size := ranges[i+2]
-			// Clip copy range to actual source object boundaries
+			// Clip copy range to actual source object boundaries.
 			if offset >= sourceSize {
 				continue
 			}
@@ -1638,7 +1650,7 @@ func (inode *Inode) copyUnmodifiedParts(numParts, finalSize uint64) (err error) 
 						Size:       size,
 					})
 					if requestErr != nil {
-						// Treat stale source-size races as a conflict, not a hard EINVAL
+						// Treat stale source-size races as conflict, not hard EINVAL.
 						if mapAwsError(requestErr) == syscall.EINVAL &&
 							strings.Contains(requestErr.Error(), "InvalidArgument") &&
 							strings.Contains(requestErr.Error(), "Range specified is not valid for source object of size") {
