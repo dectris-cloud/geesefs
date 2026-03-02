@@ -1,9 +1,17 @@
-name: Library Release
+---
+name: Dectris Release
 
 on:
   push:
     tags:
     - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version (e.g. 0.43.0-dc.1). A 'v' prefix will be added for the tag/release."
+        required: true
+        type: string
+        default: '0.43.0-dc.1'
 
 permissions:
   contents: write
@@ -32,10 +40,23 @@ jobs:
       run: |
         sha256sum geesefs > checksums.txt
 
+    - name: Determine version
+      id: version
+      run: |
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          echo "tag=v${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          echo "prerelease=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "tag=${GITHUB_REF/refs\/tags\//}" >> "$GITHUB_OUTPUT"
+          echo "prerelease=false" >> "$GITHUB_OUTPUT"
+        fi
+
     - name: Upload library artifacts to release
       uses: softprops/action-gh-release@v1
       if: startsWith(github.ref, 'refs/tags/')
       with:
+        tag_name: ${{ steps.version.outputs.tag }}
+        prerelease: ${{ steps.version.outputs.prerelease == 'true' }}
         files: |
           geesefs
           checksums.txt
@@ -52,9 +73,9 @@ jobs:
 
           ### Usage
           **Direct execution:** Download `geesefs`, make it executable (`chmod +x geesefs`), and run it directly.
-          
+
           **For Go projects:** Use `go get github.com/yandex-cloud/geesefs`
 
           The binary is completely self-contained with no external dependencies required.
       env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} 
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
