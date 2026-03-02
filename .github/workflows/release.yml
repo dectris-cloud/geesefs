@@ -1,9 +1,11 @@
 name: Release
 
+# Disabled because it won't work for us
 on:
-  push:
-    tags:
-    - "v*"
+  workflow_dispatch:
+#   push:
+#     tags:
+#     - "v*"
 
 jobs:
 
