@@ -80,8 +80,9 @@ func NewS3(bucket string, flags *cfg.FlagStorage, config *cfg.S3Config) (*S3Back
 		flags:     flags,
 		config:    config,
 		cap: Capabilities{
-			Name:             "s3",
-			MaxMultipartSize: 5 * 1024 * 1024 * 1024,
+			Name:                      "s3",
+			MaxMultipartSize:          5 * 1024 * 1024 * 1024,
+			SupportsConditionalWrites: true,
 		},
 	}
 
@@ -925,7 +926,14 @@ func (s *S3Backend) GetBlob(param *GetBlobInput) (*GetBlobOutput, error) {
 		}
 		get.Range = &bytes
 	}
-	// TODO handle IfMatch
+
+	if param.IfMatch != nil {
+		get.IfMatch = param.IfMatch
+	}
+
+	if param.IfNoneMatch != nil {
+		get.IfNoneMatch = param.IfNoneMatch
+	}
 
 	req, resp := s.GetObjectRequest(&get)
 	err := req.Send()
@@ -988,6 +996,16 @@ func (s *S3Backend) PutBlob(param *PutBlobInput) (*PutBlobOutput, error) {
 
 	if s.config.ACL != "" {
 		put.ACL = &s.config.ACL
+	}
+
+	// Conditional write support (S3 feature since August 2024)
+	// IfMatch: only write if ETag matches (optimistic locking for updates)
+	// IfNoneMatch: only write if object doesn't exist (create-if-not-exists)
+	if param.IfMatch != nil {
+		put.IfMatch = param.IfMatch
+	}
+	if param.IfNoneMatch != nil {
+		put.IfNoneMatch = param.IfNoneMatch
 	}
 
 	req, resp := s.PutObjectRequest(put)

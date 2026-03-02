@@ -1,0 +1,54 @@
+# GeeseFS Conditional Writes Test Runner
+# Usage: just <recipe>
+
+# Default recipe - show help
+default:
+    @just --list
+
+# Build and run the test
+test:
+    docker compose build
+    docker compose up -d minio
+    docker compose up minio-init
+    docker compose up -d geesefs-1 geesefs-2
+    @echo "Waiting for GeeseFS mounts to become healthy..."
+    @sleep 15
+    docker compose up test
+    docker compose down
+
+# Force rebuild images (no cache)
+rebuild:
+    docker compose build --no-cache
+
+# Start services without running test
+up:
+    docker compose up -d --build
+
+# Stop services
+down:
+    docker compose down
+
+# Clean up (stop and remove volumes)
+clean:
+    docker compose down -v --remove-orphans
+
+# View logs
+logs:
+    docker compose logs -f geesefs-1 geesefs-2
+
+# View all logs
+logs-all:
+    docker compose logs -f
+
+# Shell into mount 1
+shell-1:
+    docker exec -it geesefs-conditional-mount-1 sh
+
+# Shell into mount 2
+shell-2:
+    docker exec -it geesefs-conditional-mount-2 sh
+
+# Force clean rebuild and run
+fresh: clean
+    docker compose build --no-cache
+    just test

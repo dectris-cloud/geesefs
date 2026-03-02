@@ -30,7 +30,7 @@ import (
 	"github.com/urfave/cli"
 )
 
-const GEESEFS_VERSION = "0.44.0"
+const GEESEFS_VERSION = "0.43.0-dc.2"
 
 var flagCategories map[string]string
 
@@ -565,6 +565,30 @@ MISC OPTIONS:
 				" Only works correctly if your S3 returns UserMetadata in listings",
 		},
 
+		cli.BoolFlag{
+			Name:  "enable-symlinks-file",
+			Usage: "Store symlinks in a hidden .symlinks file per directory instead of object metadata." +
+				" Only supported with S3-compatible backends (AWS S3, MinIO, GCS)." +
+				" Useful for S3 backends that don't return UserMetadata in listings.",
+		},
+
+		cli.StringFlag{
+			Name:  "symlinks-file",
+			Value: ".geesefs_symlinks",
+			Usage: "Name of the hidden file storing symlinks metadata when --enable-symlinks-file is used.",
+		},
+
+		cli.BoolTFlag{
+			Name:  "hide-symlinks-file",
+			Usage: "Hide the .symlinks file from directory listings. Set to false to show it. (default: true)",
+		},
+
+		cli.DurationFlag{
+			Name:  "symlinks-batch-delay",
+			Value: 100 * time.Millisecond,
+			Usage: "Delay before flushing batched symlinks changes to S3. 0 to disable batching.",
+		},
+
 		cli.StringFlag{
 			Name:  "refresh-attr",
 			Value: ".invalidate",
@@ -867,6 +891,10 @@ func PopulateFlags(c *cli.Context) (ret *FlagStorage) {
 		RdevAttr:            c.String("rdev-attr"),
 		MtimeAttr:           c.String("mtime-attr"),
 		SymlinkAttr:         c.String("symlink-attr"),
+		SymlinksFile:        c.String("symlinks-file"),
+		EnableSymlinksFile:  c.Bool("enable-symlinks-file"),
+		HideSymlinksFile:    c.Bool("hide-symlinks-file"),
+		SymlinksBatchDelay:  c.Duration("symlinks-batch-delay"),
 		RefreshAttr:         c.String("refresh-attr"),
 		CachePath:           c.String("cache"),
 		MaxDiskCacheFD:      int64(c.Int("max-disk-cache-fd")),
@@ -1071,6 +1099,8 @@ func DefaultFlags() *FlagStorage {
 		RdevAttr:            "rdev",
 		MtimeAttr:           "mtime",
 		SymlinkAttr:         "--symlink-target",
+		SymlinksFile:        ".geesefs_symlinks",
+		SymlinksBatchDelay:  100 * time.Millisecond,
 		RefreshAttr:         ".invalidate",
 		StatCacheTTL:        30 * time.Second,
 		HTTPTimeout:         30 * time.Second,

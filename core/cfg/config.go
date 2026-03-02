@@ -95,6 +95,10 @@ type FlagStorage struct {
 	RdevAttr            string
 	MtimeAttr           string
 	SymlinkAttr         string
+	SymlinksFile        string // Name of the hidden file storing symlinks metadata
+	EnableSymlinksFile  bool   // Use .symlinks file instead of object metadata for symlinks
+	HideSymlinksFile    bool          // Hide the .symlinks file from directory listings
+	SymlinksBatchDelay  time.Duration // Delay before flushing batched symlink changes (0 = disable)
 	RefreshAttr         string
 	RefreshFilename     string
 	FlushFilename       string
