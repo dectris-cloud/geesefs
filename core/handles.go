@@ -638,6 +638,7 @@ func (inode *Inode) fillXattr() (err error) {
 			err = nil
 			if inode.isDir() {
 				inode.dir.ImplicitDir = true
+				inode.userMetadata = make(map[string][]byte)
 			}
 		}
 		return err

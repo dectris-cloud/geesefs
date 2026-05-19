@@ -72,6 +72,18 @@ func (fs *Goofys) partNum(offset uint64) uint64 {
 	))
 }
 
+func (fs *Goofys) numParts(size uint64) uint64 {
+	part := fs.partNum(size)
+	if part == fs.maxParts() {
+		return part
+	}
+	partOffset, _ := fs.partRange(part)
+	if partOffset < size {
+		part++
+	}
+	return part
+}
+
 func (fs *Goofys) partRange(num uint64) (offset uint64, size uint64) {
 	n := uint64(0)
 	start := uint64(0)
@@ -83,6 +95,13 @@ func (fs *Goofys) partRange(num uint64) (offset uint64, size uint64) {
 		n += s.PartCount
 	}
 	panic(fmt.Sprintf("Part number too large: %v", num))
+}
+
+func (fs *Goofys) maxParts() (parts uint64) {
+	for _, s := range fs.flags.PartSizes {
+		parts += s.PartCount
+	}
+	return parts
 }
 
 func (fs *Goofys) getMaxFileSize() (size uint64) {
@@ -221,11 +240,15 @@ func (inode *Inode) OpenCacheFD() error {
 	return nil
 }
 
-func (inode *Inode) loadFromServer(readRanges []Range, readAheadSize uint64, ignoreMemoryLimit bool) {
+func (inode *Inode) loadFromServer(readRanges []Range, readAheadSize uint64, ignoreMemoryLimit bool) error {
 	// Add readahead & merge adjacent requests
 	readRanges = mergeRA(readRanges, readAheadSize, inode.fs.flags.ReadMergeKB*1024)
 	last := &readRanges[len(readRanges)-1]
 	if last.End > inode.knownSize {
+		if last.Start > inode.knownSize {
+			log.Errorf("Trying to read invalid range: offset=%v, inode.knownSize=%v. Possibly file resized remotely.", last.Start, inode.knownSize)
+			return syscall.ERANGE
+		}
 		last.End = inode.knownSize
 	}
 	// Split very large requests into smaller chunks to read in parallel
@@ -246,6 +269,7 @@ func (inode *Inode) loadFromServer(readRanges []Range, readAheadSize uint64, ign
 	for _, rr := range readRanges {
 		go inode.retryRead(cloud, key, rr.Start, rr.End-rr.Start, ignoreMemoryLimit)
 	}
+	return nil
 }
 
 func (inode *Inode) loadFromDisk(diskRanges []Range) (allocated int64, err error) {
@@ -293,7 +317,10 @@ func (inode *Inode) LoadRange(offset, size uint64, readAheadSize uint64, ignoreM
 
 	if len(readRanges) > 0 {
 		miss = true
-		inode.loadFromServer(readRanges, readAheadSize, ignoreMemoryLimit)
+		err = inode.loadFromServer(readRanges, readAheadSize, ignoreMemoryLimit)
+		if err != nil {
+			return miss, err
+		}
 	}
 
 	if inode.fs.flags.CachePath != "" {
@@ -1782,11 +1809,7 @@ func (inode *Inode) completeMultipart(finalSize uint64) {
 		// Multipart upload was canceled in the meantime (by a parallel conflict) => do not complete
 		return
 	}
-	numParts := inode.fs.partNum(finalSize)
-	numPartOffset, _ := inode.fs.partRange(numParts)
-	if numPartOffset < finalSize {
-		numParts++
-	}
+	numParts := inode.fs.numParts(finalSize)
 	err := inode.copyUnmodifiedParts(numParts, finalSize)
 	if !(inode.CacheState == ST_CREATED || inode.CacheState == ST_MODIFIED) {
 		// State changed, abort this flush (even if we get ENOENT)
@@ -1899,7 +1922,12 @@ func (inode *Inode) SetAttributes(size *uint64, mode *os.FileMode,
 
 	if inode.Parent == nil {
 		// chmod/chown on the root directory of mountpoint is not supported
-		return syscall.ENOTSUP
+		if inode.fs.flags.IgnoreSettingAttrsForRootDirErrors {
+			log.Debug("Trying to set attrs for roor dir")
+			return
+		} else {
+			return syscall.ENOTSUP
+		}
 	}
 
 	fs := inode.fs

@@ -1,3 +1,53 @@
+geesefs (0.43.7) unstable; urgency=medium
+
+  * Fix multipart part boundary handling without allowing out-of-range parts (#177)
+
+ -- Artem Ikchurin <aikch@yandex-team.ru>  Tue, 05 May 2026 14:55:00 +0300
+
+geesefs (0.43.6) unstable; urgency=medium
+
+  * Update deps (#176)
+
+ -- Artem Ikchurin <aikch@yandex-team.ru>  Wed, 20 Apr 2026 17:35:00 +0300
+
+geesefs (0.43.5) unstable; urgency=medium
+
+  * fix(s3): URI escaping in VHS mode (#174)
+
+ -- Artem Ikchurin <aikch@yandex-team.ru>  Wed, 4 Mar 2026 14:15:00 +0300
+
+geesefs (0.43.4) unstable; urgency=medium
+
+  * fix(s3): invalid CopySource format with virtual-hosted-style endpoint. (#173)
+  * Fix infinite retry loop on read errors
+
+ -- Artem Ikchurin <aikch@yandex-team.ru>  Thu, 26 Feb 2026 13:50:00 +0300
+
+geesefs (0.43.3) unstable; urgency=medium
+
+  * Add flag to ignore root directory attribute errors
+  * Fix double conversion of GCInterval to bytes
+  * Fix panic when setting user metadata on implicit directories
+  * Fix panic in partRange when uploading exactly 10000 parts
+  * Fix inode refcnt bug
+  * Add support for converting hardlinks to symlinks
+  * Update Docker build and golang dependencies
+  * Add test workflows to run on pull requests
+
+ -- Artem Ikchurin <aikch@yandex-team.ru>  Thu, 23 Jan 2026 15:16:00 +0300
+
+geesefs (0.43.2) unstable; urgency=medium
+
+  * Fixup processing of the boundaries of the requested range when downloading data from a server
+
+ -- Artem Ikchurin <aikch@yandex-team.ru>  Tue, 12 Aug 2025 14:20:00 +0300
+
+geesefs (0.43.1) unstable; urgency=medium
+
+  * Properly handle dirtyQueueId during inode ID swaps in directory rename
+
+ -- Artem Ikchurin <aikch@yandex-team.ru>  Fri, 25 Jul 2025 13:50:00 +0300
+
 geesefs (0.43.0) unstable; urgency=medium
 
   * Do not return ENOMEM to readers by default, allow them to exceed the memory limit. May be turned back with --use-enomem

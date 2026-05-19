@@ -38,6 +38,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws/corehandlers"
 	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/request"
+	"github.com/aws/aws-sdk-go/private/protocol/rest"
 	"github.com/aws/aws-sdk-go/service/s3"
 )
 
@@ -63,6 +64,10 @@ type S3Backend struct {
 func NewS3(bucket string, flags *cfg.FlagStorage, config *cfg.S3Config) (*S3Backend, error) {
 	if config.MultipartCopyThreshold == 0 {
 		config.MultipartCopyThreshold = 128 * 1024 * 1024
+	}
+	config.CopySourceBucket = bucket
+	if config.Subdomain {
+		bucket = "/"
 	}
 
 	if config.ProjectId != "" {
@@ -267,6 +272,11 @@ func (s *S3Backend) newS3() {
 		Name: "core.SDKVersionUserAgentHandler",
 		Fn: request.MakeAddToUserAgentHandler("GeeseFS", cfg.GEESEFS_VERSION,
 			runtime.Version(), runtime.GOOS, runtime.GOARCH),
+	})
+	s.S3.Handlers.Build.PushBack(func(req *request.Request) {
+		if s.config.Subdomain {
+			req.HTTPRequest.URL.RawPath = rest.EscapePath(req.HTTPRequest.URL.Path, false)
+		}
 	})
 }
 
@@ -816,7 +826,7 @@ func (s *S3Backend) CopyBlob(param *CopyBlobInput) (*CopyBlobOutput, error) {
 		metadataDirective = s3.MetadataDirectiveReplace
 	}
 
-	from := s.bucket + "/" + param.Source
+	from := s.config.CopySourceBucket + "/" + param.Source
 
 	// Copy into the same object is used to just update metadata
 	// and should be very quick regardless of parameters
@@ -1130,7 +1140,7 @@ func (s *S3Backend) MultipartBlobCopy(param *MultipartBlobCopyInput) (*Multipart
 		Bucket:     &s.bucket,
 		Key:        param.Commit.Key,
 		PartNumber: aws.Int64(int64(param.PartNumber)),
-		CopySource: aws.String(pathEscape(s.bucket + "/" + param.CopySource)),
+		CopySource: aws.String(pathEscape(s.config.CopySourceBucket + "/" + param.CopySource)),
 		UploadId:   param.Commit.UploadId,
 	}
 	if param.Size != 0 {
