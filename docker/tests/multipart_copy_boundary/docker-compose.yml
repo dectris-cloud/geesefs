@@ -62,6 +62,14 @@ services:
       - /dev/fuse
     security_opt:
       - apparmor:unconfined
+    # Tight RAM so geesefs has to flush parts mid-stream instead of buffering
+    # the whole file. Forces the multi-flush state the original bug needs.
+    # 256m container budget leaves headroom for FUSE bridge + flusher buffers
+    # (16 flushers x 5 MB part = 80 MB worst case); --memory-limit 32 keeps
+    # geesefs internal data cache small enough that buffers must drain to S3
+    # mid-write.
+    mem_limit: 256m
+    memswap_limit: 256m
     environment:
       AWS_ACCESS_KEY_ID: minioadmin
       AWS_SECRET_ACCESS_KEY: minioadmin
@@ -70,7 +78,7 @@ services:
       MOUNT_POINT: /mnt/s3
       # 20 x 5 MB parts, then 10 x 25 MB parts. Small enough for a fast test,
       # same multipart-copy code path as default sizing.
-      GEESEFS_OPTS: "--debug_s3 --debug_fuse --part-sizes 5:20,25:10 --stat-cache-ttl 30s"
+      GEESEFS_OPTS: "--debug_s3 --debug_fuse --part-sizes 5:20,25:10 --memory-limit 32 --max-flushers 4 --max-parallel-parts 8 --stat-cache-ttl 1s"
     networks:
       - test-network
     healthcheck:
