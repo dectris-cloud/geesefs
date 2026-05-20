@@ -19,6 +19,7 @@ test-all:
     @just test-conditional-writes
     @just test-geesefs-conditional
     @just test-symlinks
+    @just test-multipart-boundary
     @echo ""
     @echo "All tests completed!"
 
@@ -37,6 +38,11 @@ test-symlinks:
     @echo "Running symlinks file test..."
     cd tests/symlinks_file && just test
 
+# Run multipart-copy boundary reproducer (fsync InvalidArgument bug, Feb 2026)
+test-multipart-boundary:
+    @echo "Running multipart-copy boundary reproducer..."
+    cd tests/multipart_copy_boundary && just test
+
 # ==============================================================================
 # Cleanup
 # ==============================================================================
@@ -47,6 +53,7 @@ clean-all:
     cd tests/conditional_writes && just clean || true
     cd tests/geesefs_conditional && just clean || true
     cd tests/symlinks_file && just clean || true
+    cd tests/multipart_copy_boundary && just clean || true
     @echo "Cleanup complete!"
 
 # ==============================================================================
@@ -65,6 +72,10 @@ up-geesefs-conditional:
 up-symlinks:
     cd tests/symlinks_file && docker compose up -d --build
 
+# Start multipart-copy boundary test services
+up-multipart-boundary:
+    cd tests/multipart_copy_boundary && docker compose up -d --build
+
 # ==============================================================================
 # Development Helpers
 # ==============================================================================
@@ -79,6 +90,7 @@ list-tests:
     @echo "  - tests/conditional_writes  : S3 If-Match/If-None-Match direct API tests"
     @echo "  - tests/geesefs_conditional : Conditional writes through FUSE mount"
     @echo "  - tests/symlinks_file       : .geesefs_symlinks file cross-mount visibility"
+    @echo "  - tests/multipart_copy_boundary : fsync UploadPartCopy boundary reproducer"
 
 # ==============================================================================
 # Symlinks File Test Commands
