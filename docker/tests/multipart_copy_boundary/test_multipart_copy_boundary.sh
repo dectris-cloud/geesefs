@@ -88,7 +88,7 @@ run_pattern_a() {
 
     log_info "[A] size=${size_mib} MiB - fio layout under RAM pressure"
     ge "rm -f $file"
-    ge "fio --name=layout --filename=$file --size=${size_mib}M --bs=1M \
+    ge "timeout 90 fio --name=layout --filename=$file --size=${size_mib}M --bs=1M \
         --rw=write --ioengine=psync --direct=0 --end_fsync=1 \
         --fallocate=none --thread --minimal" >/dev/null 2>&1
     rc=$?
@@ -112,7 +112,7 @@ run_pattern_b() {
 
     log_info "[B] size=${size_mib} MiB - initial write+fsync"
     ge "rm -f $file"
-    ge "fio --name=layout --filename=$file --size=${size_mib}M --bs=1M \
+    ge "timeout 90 fio --name=layout --filename=$file --size=${size_mib}M --bs=1M \
         --rw=write --ioengine=psync --direct=0 --end_fsync=1 \
         --fallocate=none --thread --minimal" >/dev/null 2>&1
     rc=$?
@@ -125,7 +125,7 @@ run_pattern_b() {
 
     seek_mib=$(( size_mib / 2 ))
     log_info "[B] size=${size_mib} MiB - overwrite 1 MiB at offset ${seek_mib} MiB, fsync"
-    ge "dd if=/dev/urandom of=$file bs=1M count=1 seek=${seek_mib} \
+    ge "timeout 60 dd if=/dev/urandom of=$file bs=1M count=1 seek=${seek_mib} \
         conv=notrunc oflag=dsync" >/dev/null 2>&1
     rc=$?
     if [ $rc -ne 0 ]; then
