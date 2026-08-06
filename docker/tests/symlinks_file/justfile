@@ -1,0 +1,77 @@
+# GeeseFS Symlinks File Test Runner
+# Usage: just <recipe>
+
+# Default recipe - show help
+default:
+    @just --list
+
+# Build and run the test
+test:
+    docker compose build
+    docker compose up -d minio
+    docker compose up minio-init
+    docker compose up -d geesefs-1 geesefs-2
+    @echo "Waiting for GeeseFS mounts to become healthy..."
+    @sleep 15
+    docker compose up test
+    docker compose down
+
+# Start services without running test
+up:
+    docker compose up -d --build
+
+# Stop services
+down:
+    docker compose down
+
+# Clean up (stop and remove volumes)
+clean:
+    docker compose down -v --remove-orphans
+
+# View GeeseFS logs
+logs:
+    docker compose logs -f geesefs-1 geesefs-2
+
+# View all logs
+logs-all:
+    docker compose logs -f
+
+# Shell into mount 1
+shell-1:
+    docker exec -it symlinks-test-mount-1 sh
+
+# Shell into mount 2
+shell-2:
+    docker exec -it symlinks-test-mount-2 sh
+
+# Shell into MinIO
+shell-minio:
+    docker exec -it symlinks-test-minio sh
+
+# List bucket contents
+ls:
+    docker exec symlinks-test-minio mc ls myminio/testbucket/
+
+# List recursively
+ls-recursive:
+    docker exec symlinks-test-minio mc ls --recursive myminio/testbucket/
+
+# Show .geesefs_symlinks files
+ls-symlinks:
+    @echo "Looking for .geesefs_symlinks files..."
+    docker exec symlinks-test-minio mc find myminio/testbucket --name ".geesefs_symlinks" --print || echo "None found"
+
+# Cat a symlinks file (usage: just cat-symlinks [path])
+cat-symlinks path="":
+    @if [ -z "{{path}}" ]; then \
+        docker exec symlinks-test-minio mc cat myminio/testbucket/.geesefs_symlinks 2>/dev/null || echo "No file in root"; \
+    else \
+        docker exec symlinks-test-minio mc cat myminio/testbucket/{{path}}/.geesefs_symlinks 2>/dev/null || echo "No file in {{path}}"; \
+    fi
+
+# Open MinIO console
+console:
+    open http://localhost:9301
+
+# Rebuild and run
+rebuild: clean test

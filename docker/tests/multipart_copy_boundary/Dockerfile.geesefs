@@ -1,0 +1,38 @@
+# GeeseFS with FUSE + fio for multipart-copy boundary reproducer
+FROM golang:1.25-alpine AS builder
+
+RUN apk add --no-cache git make bash
+
+WORKDIR /build
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+ENV CGO_ENABLED=0
+ENV GOOS=linux
+
+RUN go build -ldflags "-X main.Version=docker-build -s -w" -o geesefs .
+
+FROM alpine:latest
+
+RUN apk add --no-cache \
+    fuse \
+    fuse-common \
+    ca-certificates \
+    tzdata \
+    bash \
+    coreutils \
+    fio \
+    netcat-openbsd
+
+COPY --from=builder /build/geesefs /geesefs
+
+RUN mkdir -p /mnt/s3 /var/log \
+    && echo "user_allow_other" >> /etc/fuse.conf
+
+COPY docker/tests/multipart_copy_boundary/docker-entrypoint.sh /docker-entrypoint.sh
+RUN chmod +x /docker-entrypoint.sh
+
+ENTRYPOINT ["/docker-entrypoint.sh"]

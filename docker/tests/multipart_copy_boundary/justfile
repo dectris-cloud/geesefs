@@ -1,0 +1,35 @@
+# GeeseFS multipart-copy boundary reproducer test runner
+
+default:
+    @just --list
+
+# Build and run the reproducer
+test:
+    docker compose build
+    docker compose up -d minio
+    docker compose up minio-init
+    docker compose up -d geesefs
+    @echo "Waiting for GeeseFS mount to become healthy..."
+    @sleep 15
+    docker compose up test
+    docker compose down
+
+# Force rebuild images (no cache)
+rebuild:
+    docker compose build --no-cache
+
+# Start services without running test
+up:
+    docker compose up -d --build
+
+# Stop services
+down:
+    docker compose down
+
+# Stop and remove volumes
+clean:
+    docker compose down -v --remove-orphans
+
+# Tail geesefs logs
+logs:
+    docker compose logs -f geesefs
