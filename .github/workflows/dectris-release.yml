@@ -8,10 +8,10 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release version (e.g. 0.43.0-dc.1). A 'v' prefix will be added for the tag/release."
+        description: "Release version (e.g. 0.43.8-dc.1). A 'v' prefix will be added for the tag/release."
         required: true
         type: string
-        default: '0.43.0-dc.1'
+        default: '0.43.8-dc.1'
 
 permissions:
   contents: write
@@ -27,7 +27,7 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v4
       with:
-        go-version: '1.22'
+        go-version: '1.25'
 
     - name: Get dependencies
       run: go mod download
