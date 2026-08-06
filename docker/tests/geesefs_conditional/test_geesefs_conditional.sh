@@ -384,36 +384,40 @@ fi
 # =============================================================================
 echo ""
 echo "============================================================"
-echo "TEST 7: Verify conditional headers in GeeseFS logs"
+echo "TEST 7: Plain file writes issue no conditional headers"
 echo "============================================================"
 
-log_info "Checking GeeseFS logs for If-Match/If-None-Match headers..."
+# These mounts run without --enable-symlinks-file, and conditional writes are
+# only issued by the symlinks-file code path. So the correct expectation here
+# is zero conditional headers. Presence of the headers is asserted by TEST 12
+# of the symlinks_file suite, where the feature is actually enabled.
 
-# Get recent logs from geesefs containers
-LOGS1=$(docker logs geesefs-mount-1 2>&1 | tail -200 || echo "")
-LOGS2=$(docker logs geesefs-mount-2 2>&1 | tail -200 || echo "")
+log_info "Reading S3 debug logs from both mounts..."
 
-# Look for conditional write headers
-IF_MATCH_COUNT=0
-IF_NONE_MATCH_COUNT=0
+LOGS=$( { docker logs "$MOUNT1" 2>&1; docker logs "$MOUNT2" 2>&1; } || true )
 
-if echo "$LOGS1 $LOGS2" | grep -qi "if-match\|ifmatch"; then
-    IF_MATCH_COUNT=$(echo "$LOGS1 $LOGS2" | grep -ci "if-match\|ifmatch" || echo "0")
-fi
-
-if echo "$LOGS1 $LOGS2" | grep -qi "if-none-match\|ifnonematch"; then
-    IF_NONE_MATCH_COUNT=$(echo "$LOGS1 $LOGS2" | grep -ci "if-none-match\|ifnonematch" || echo "0")
-fi
-
-log_info "If-Match headers found: $IF_MATCH_COUNT"
-log_info "If-None-Match headers found: $IF_NONE_MATCH_COUNT"
-
-# This test is informational - we just want to see if headers are being used
-if [ "$IF_MATCH_COUNT" -gt 0 ] || [ "$IF_NONE_MATCH_COUNT" -gt 0 ]; then
-    log_pass "Conditional write headers detected in logs"
+if [ -z "$LOGS" ]; then
+    log_fail "Could not read geesefs logs (needs --debug_s3 and a mounted docker.sock)"
 else
-    log_info "Note: Headers not visible in logs (may need --debug_s3 flag or different log level)"
-    log_pass "Test completed (informational only)"
+    # Guard the log plumbing itself: --debug_s3 must be dumping requests, or the
+    # absence check below would pass for the wrong reason.
+    if printf '%s\n' "$LOGS" | grep -q -- "---\[ REQUEST"; then
+        log_pass "S3 debug request dumps are present in the logs"
+    else
+        log_fail "No S3 request dumps found - --debug_s3 is not producing header output"
+    fi
+
+    IF_MATCH_COUNT=$(printf '%s\n' "$LOGS" | grep -ci "If-Match" || true)
+    IF_NONE_MATCH_COUNT=$(printf '%s\n' "$LOGS" | grep -ci "If-None-Match" || true)
+
+    log_info "If-Match headers found:      $IF_MATCH_COUNT"
+    log_info "If-None-Match headers found: $IF_NONE_MATCH_COUNT"
+
+    if [ "$IF_MATCH_COUNT" -eq 0 ] && [ "$IF_NONE_MATCH_COUNT" -eq 0 ]; then
+        log_pass "No conditional headers on plain writes, as expected"
+    else
+        log_fail "Unexpected conditional headers on plain writes (If-Match=$IF_MATCH_COUNT, If-None-Match=$IF_NONE_MATCH_COUNT)"
+    fi
 fi
 
 # =============================================================================

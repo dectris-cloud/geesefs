@@ -751,6 +751,42 @@ fi
 cleanup_test_folder 11
 
 # ==============================================================================
+log_header "TEST 12: Conditional-write headers reach S3"
+# ==============================================================================
+
+# The symlinks file is guarded by optimistic locking, so every save must carry
+# a conditional header. If-Match is the sharpest signal: it is only ever set on
+# the update path (saveSymlinksFile with a known ETag). If-None-Match also
+# covers the conditional GET used to revalidate the cache, so it is the weaker
+# of the two. Either dropping to zero means conditional writes silently stopped.
+
+log_info "Reading S3 debug logs from both mounts..."
+
+LOGS=$( { docker logs "$MOUNT1" 2>&1; docker logs "$MOUNT2" 2>&1; } || true )
+
+if [ -z "$LOGS" ]; then
+    log_fail "Could not read geesefs logs (needs --debug_s3 and a mounted docker.sock)"
+else
+    IF_MATCH_COUNT=$(printf '%s\n' "$LOGS" | grep -ci "If-Match" || true)
+    IF_NONE_MATCH_COUNT=$(printf '%s\n' "$LOGS" | grep -ci "If-None-Match" || true)
+
+    log_info "If-Match headers (write path):        $IF_MATCH_COUNT"
+    log_info "If-None-Match headers (write + GET):  $IF_NONE_MATCH_COUNT"
+
+    if [ "$IF_MATCH_COUNT" -gt 0 ]; then
+        log_pass "If-Match sent on symlinks-file updates"
+    else
+        log_fail "No If-Match header sent - conditional writes are not reaching S3"
+    fi
+
+    if [ "$IF_NONE_MATCH_COUNT" -gt 0 ]; then
+        log_pass "If-None-Match sent on symlinks-file create/revalidate"
+    else
+        log_fail "No If-None-Match header sent - conditional writes are not reaching S3"
+    fi
+fi
+
+# ==============================================================================
 log_header "TEST SUMMARY"
 # ==============================================================================
 
