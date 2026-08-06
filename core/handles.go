@@ -131,9 +131,10 @@ type Inode struct {
 	// multipart upload state
 	mpu *MultipartBlobCommitInput
 
-	userMetadataDirty int
-	userMetadata      map[string][]byte
-	s3Metadata        map[string][]byte
+	userMetadataDirty  int
+	userMetadata       map[string][]byte
+	s3Metadata         map[string][]byte
+	isVirtualSymlink   bool // true if symlink is stored in .geesefs_symlinks (no S3 object)
 
 	// last known size and etag from the cloud
 	knownSize uint64

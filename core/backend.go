@@ -31,6 +31,9 @@ type Capabilities struct {
 	// indicates that the blob store has native support for directories
 	DirBlob bool
 	Name    string
+	// SupportsConditionalWrites indicates the backend supports If-Match/If-None-Match
+	// conditional headers on PutObject (used for optimistic locking of .geesefs_symlinks)
+	SupportsConditionalWrites bool
 }
 
 type HeadBlobInput struct {
@@ -117,10 +120,11 @@ type CopyBlobOutput struct {
 }
 
 type GetBlobInput struct {
-	Key     string
-	Start   uint64
-	Count   uint64
-	IfMatch *string
+	Key         string
+	Start       uint64
+	Count       uint64
+	IfMatch     *string
+	IfNoneMatch *string // For conditional GET - returns 304 if ETag matches
 }
 
 type GetBlobOutput struct {
@@ -137,7 +141,11 @@ type PutBlobInput struct {
 	ContentType *string
 	DirBlob     bool
 
-	IfMatch     *string
+	// IfMatch specifies an ETag; the request succeeds only if the object's ETag matches.
+	// Used for optimistic locking / conditional updates.
+	IfMatch *string
+	// IfNoneMatch specifies that the request should succeed only if the object does not exist.
+	// Set to "*" to prevent overwriting an existing object.
 	IfNoneMatch *string
 
 	Tags map[string]string

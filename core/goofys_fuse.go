@@ -885,6 +885,7 @@ func (fs *GoofysFuse) Fallocate(
 	if op.Offset+op.Length > inode.Attributes.Size {
 		if (op.Mode & FALLOC_FL_KEEP_SIZE) == 0 {
 			// Resize
+			oldSize := inode.Attributes.Size
 			if op.Offset+op.Length > fs.getMaxFileSize() {
 				// File size too large
 				log.Warnf(
@@ -896,6 +897,15 @@ func (fs *GoofysFuse) Fallocate(
 			}
 			inode.ResizeUnlocked(op.Offset+op.Length, true)
 			modified = true
+			// Object storage can't represent sparse extensions without data. If we extend
+			// the file size via fallocate (mode 0), mark the new range as zero-filled so
+			// it will be uploaded and the final object size matches local size.
+			if (op.Mode&(FALLOC_FL_PUNCH_HOLE|FALLOC_FL_ZERO_RANGE)) == 0 {
+				if oldSize < op.Offset+op.Length {
+					zeroed, _ := inode.buffers.ZeroRange(oldSize, op.Offset+op.Length-oldSize)
+					modified = modified || zeroed
+				}
+			}
 		} else {
 			if op.Offset > inode.Attributes.Size {
 				op.Offset = inode.Attributes.Size

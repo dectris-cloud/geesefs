@@ -96,6 +96,8 @@ type Goofys struct {
 	inflightListingId int
 	inflightListings  map[int]map[string]bool
 	inflightChanges   map[string]int
+	// Directories currently having non-empty pendingSymlinkChanges queues.
+	activeSymlinkFlushDirs map[fuseops.InodeID]*Inode
 
 	nextHandleID fuseops.HandleID
 	dirHandles   map[fuseops.HandleID]*DirHandle
@@ -266,13 +268,14 @@ func newGoofys(ctx context.Context, bucket string, flags *cfg.FlagStorage,
 	newBackend func(string, *cfg.FlagStorage) (StorageBackend, error)) (*Goofys, error) {
 	// Set up the basic struct.
 	fs := &Goofys{
-		bucket:           bucket,
-		flags:            flags,
-		umask:            0122,
-		shutdownCh:       make(chan struct{}),
-		zeroBuf:          make([]byte, 1048576),
-		inflightChanges:  make(map[string]int),
-		inflightListings: make(map[int]map[string]bool),
+		bucket:                 bucket,
+		flags:                  flags,
+		umask:                  0122,
+		shutdownCh:             make(chan struct{}),
+		zeroBuf:                make([]byte, 1048576),
+		inflightChanges:        make(map[string]int),
+		inflightListings:       make(map[int]map[string]bool),
+		activeSymlinkFlushDirs: make(map[fuseops.InodeID]*Inode),
 		stats: OpStats{
 			ts: time.Now(),
 		},
@@ -299,6 +302,11 @@ func newGoofys(ctx context.Context, bucket string, flags *cfg.FlagStorage,
 	cloud, err := newBackend(bucket, flags)
 	if err != nil {
 		return nil, fmt.Errorf("Unable to setup backend: %v", err)
+	}
+
+	// Validate that symlinks file feature is only used with backends that support conditional writes
+	if flags.EnableSymlinksFile && !cloud.Capabilities().SupportsConditionalWrites {
+		return nil, fmt.Errorf("--enable-symlinks-file requires a backend that supports conditional writes (If-Match/If-None-Match). Current backend: %v", cloud.Capabilities().Name)
 	}
 
 	randomObjectName := prefix + (RandStringBytesMaskImprSrc(32))
@@ -364,11 +372,43 @@ func newGoofys(ctx context.Context, bucket string, flags *cfg.FlagStorage,
 }
 
 func (fs *Goofys) Shutdown() {
+	fs.flushAllPendingSymlinks()
 	atomic.StoreInt32(&fs.shutdown, 1)
 	close(fs.shutdownCh)
 	fs.WakeupFlusher()
 	if fs.diskFdQueue != nil {
 		fs.diskFdQueue.cond.Broadcast()
+	}
+}
+
+// collectActiveSymlinkFlushDirs snapshots directories with pending symlink
+// changes. When parent is non-nil, only directories in that subtree are kept.
+func (fs *Goofys) collectActiveSymlinkFlushDirs(parent *Inode) []*Inode {
+	fs.mu.RLock()
+	inodes := make([]*Inode, 0, len(fs.activeSymlinkFlushDirs))
+	for _, inode := range fs.activeSymlinkFlushDirs {
+		if inode == nil {
+			continue
+		}
+		if parent == nil || inode == parent || parent.isParentOf(inode) {
+			inodes = append(inodes, inode)
+		}
+	}
+	fs.mu.RUnlock()
+	return inodes
+}
+
+// flushAllPendingSymlinks walks all directory inodes and flushes any
+// pending batched symlink changes to S3.
+func (fs *Goofys) flushAllPendingSymlinks() {
+	if !fs.flags.EnableSymlinksFile {
+		return
+	}
+	inodes := fs.collectActiveSymlinkFlushDirs(nil)
+	for _, inode := range inodes {
+		if err := inode.FlushPendingSymlinks(); err != nil {
+			s3Log.Warnf("flushAllPendingSymlinks: failed for %v: %v", inode.FullName(), err)
+		}
 	}
 }
 
@@ -1143,6 +1183,14 @@ func (fs *Goofys) SyncTree(parent *Inode) (err error) {
 		fs.mu.RUnlock()
 		if inode != nil {
 			inode.SyncFile()
+		}
+	}
+
+	if fs.flags.EnableSymlinksFile {
+		for _, inode := range fs.collectActiveSymlinkFlushDirs(parent) {
+			if err := inode.FlushPendingSymlinks(); err != nil {
+				s3Log.Warnf("SyncTree: flush symlinks failed for %v: %v", inode.FullName(), err)
+			}
 		}
 	}
 	return

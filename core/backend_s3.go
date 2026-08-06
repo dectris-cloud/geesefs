@@ -89,8 +89,9 @@ func NewS3(bucket string, flags *cfg.FlagStorage, config *cfg.S3Config) (*S3Back
 		flags:     flags,
 		config:    config,
 		cap: Capabilities{
-			Name:             "s3",
-			MaxMultipartSize: 5 * 1024 * 1024 * 1024,
+			Name:                      "s3",
+			MaxMultipartSize:          5 * 1024 * 1024 * 1024,
+			SupportsConditionalWrites: true,
 		},
 	}
 
@@ -1020,7 +1021,14 @@ func (s *S3Backend) GetBlob(param *GetBlobInput) (*GetBlobOutput, error) {
 		}
 		get.Range = &bytes
 	}
-	// TODO handle IfMatch
+
+	if param.IfMatch != nil {
+		get.IfMatch = param.IfMatch
+	}
+
+	if param.IfNoneMatch != nil {
+		get.IfNoneMatch = param.IfNoneMatch
+	}
 
 	req, resp := s.GetObjectRequest(&get)
 	err := req.Send()
