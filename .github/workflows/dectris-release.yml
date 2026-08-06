@@ -53,7 +53,9 @@ jobs:
 
     - name: Upload library artifacts to release
       uses: softprops/action-gh-release@v1
-      if: startsWith(github.ref, 'refs/tags/')
+      # Publish on a tag push, and on manual dispatch, where the tag is taken
+      # from the version input and created at the dispatched ref.
+      if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
       with:
         tag_name: ${{ steps.version.outputs.tag }}
         prerelease: ${{ steps.version.outputs.prerelease == 'true' }}
