@@ -152,6 +152,10 @@ func main() {
 			log.Println("File system has been successfully mounted.")
 			if !flags.Foreground {
 				daemonizer.NotifySuccess(true)
+				// Runtime panics write to fd 2, which the two Close calls
+				// below discard, so a crashed daemon leaves no trace anywhere.
+				// Route crash output to a file first (Go keeps a dup of it).
+				setupCrashLog(bucketName, flags.MountPoint)
 				os.Stderr.Close()
 				os.Stdout.Close()
 			}
