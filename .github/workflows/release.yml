@@ -12,10 +12,10 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@0717577d45739eb3c851188b29f50ed6c0b2194e  # v2
 
     - name: Set up Go
-      uses: actions/setup-go@v2
+      uses: actions/setup-go@bfdd3570ce990073878bf10f6b2d79082de49492  # v2
       with:
         go-version: 1.25
 
@@ -53,7 +53,10 @@ jobs:
         s3cmd ${{secrets.S3CMD}} put geesefs-win-x64.exe s3://${{secrets.S3BUCKET}}/${GITHUB_REF/refs\/tags\/v/}/geesefs-win-x64.exe
         s3cmd ${{secrets.S3CMD}} put geesefs-tests-linux-amd64 s3://${{secrets.S3BUCKET}}/${GITHUB_REF/refs\/tags\/v/}/geesefs-tests-linux-amd64
 
-    - uses: "marvinpinto/action-automatic-releases@latest"
+    # Upstream repo is archived (read-only mirror, last pushed 2024-04-24), so
+    # `latest` will not move again. Pinned anyway: the tag is still mutable by
+    # whoever controls the repo, and this step holds repo_token.
+    - uses: "marvinpinto/action-automatic-releases@d68defdd11f9dcc7f52f35c1b7c236ee7513bcc1"  # latest
       with:
         repo_token: "${{ secrets.GITHUB_TOKEN }}"
         prerelease: false
