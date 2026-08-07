@@ -1,0 +1,42 @@
+---
+# Upstream-owned workflows. These are unmodified (or near-unmodified) geesefs
+# files that are replaced wholesale on every rebase onto upstream, so fixing
+# their findings here would conflict on every sync. They are excluded so the
+# gate stays meaningful for the workflows this fork actually owns.
+rules:
+  unpinned-uses:
+    ignore:
+      - test.yml
+  template-injection:
+    ignore:
+      - test.yml
+      - release.yml
+  secrets-outside-env:
+    ignore:
+      - release.yml
+  excessive-permissions:
+    ignore:
+      - test.yml
+      - release.yml
+  artipacked:
+    ignore:
+      - test.yml
+      - release.yml
+  concurrency-limits:
+    ignore:
+      - test.yml
+      - release.yml
+  cache-poisoning:
+    ignore:
+      - test.yml
+      - release.yml
+  undocumented-permissions:
+    ignore:
+      - test.yml
+      - release.yml
+  # marvinpinto/action-automatic-releases is an archived read-only mirror.
+  # It only runs in release.yml, which this fork has already reduced to
+  # workflow_dispatch, so it is inert unless someone triggers it by hand.
+  archived-uses:
+    ignore:
+      - release.yml

@@ -13,21 +13,32 @@ on:
         type: string
         default: '0.43.8-dc.1'
 
-permissions:
-  contents: write
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions: {}
 
 jobs:
   build-libraries:
     runs-on: ubuntu-latest
+    # Scoped to this job rather than the workflow: only the upload step needs
+    # write, and a workflow-level grant would extend it to any job added later.
+    permissions:
+      contents: write # required by the upload step to create the tag and release
     steps:
     - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
       with:
         submodules: true
+        persist-credentials: false
 
     - name: Set up Go
       uses: actions/setup-go@7b8cf10d4e4a01d4992d18a89f4d7dc5a3e6d6f4  # v4
       with:
         go-version: '1.25'
+        # This workflow publishes release artifacts; a poisoned restore could
+        # taint the binary that gets uploaded.
+        cache: false
 
     - name: Get dependencies
       run: go mod download
@@ -42,9 +53,12 @@ jobs:
 
     - name: Determine version
       id: version
+      env:
+        EVENT_NAME: ${{ github.event_name }}
+        INPUT_VERSION: ${{ inputs.version }}
       run: |
-        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-          echo "tag=v${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+        if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+          echo "tag=v${INPUT_VERSION}" >> "$GITHUB_OUTPUT"
           echo "prerelease=true" >> "$GITHUB_OUTPUT"
         else
           echo "tag=${GITHUB_REF/refs\/tags\//}" >> "$GITHUB_OUTPUT"

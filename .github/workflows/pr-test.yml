@@ -5,19 +5,28 @@ on:
     branches:
       - master
       - main
-  pull_request_target:
-    branches:
-      - master
-      - main
+      - dev
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
   test:
     runs-on: ubuntu-22.04
+    permissions:
+      contents: read
     steps:
+    # pull_request checks out the merge ref, so the PR head needs no explicit
+    # ref. Do not add pull_request_target here: this job builds and executes
+    # the contributor's code, and that trigger would hand it a write-capable
+    # token and repository secrets.
     - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
       with:
-        # For pull_request_target, we need to checkout the PR head
-        ref: ${{ github.event.pull_request.head.sha }}
+        persist-credentials: false
 
     - name: Set up Go
       uses: actions/setup-go@7b8cf10d4e4a01d4992d18a89f4d7dc5a3e6d6f4  # v4
