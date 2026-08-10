@@ -25,6 +25,11 @@ import (
 
 var signalsToHandle = []os.Signal{os.Interrupt, syscall.SIGTERM}
 
+// Unreachable on Windows: canDaemonize is false, so the daemon-only branch
+// that calls this never runs. Present only to keep the build compiling.
+func setupCrashLog(bucketName string, mountPoint string) {
+}
+
 func isSigUsr1(s os.Signal) bool {
 	return false
 }
