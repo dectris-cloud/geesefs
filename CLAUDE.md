@@ -82,10 +82,20 @@ cd docker && just test-multipart-boundary
 
 ## Branches
 
-- `dev` — the dectris release line. All fork work lands here, and releases are cut from it.
-- `master` — mirror of `yandex-cloud/geesefs`. Sync upstream here, then merge `master` into `dev`.
+**`dev` is the main branch.** All dectris development on geesefs lives here, every PR targets it, and releases are cut from it. Treat it as the trunk.
 
-Landing fork work on `master` means it is missing from `dev`, and a release cut afterwards silently ships without it.
+**`master` is a read-only mirror of `yandex-cloud/geesefs`.** It must always point at the exact upstream commit the fork is based on, and must never carry a dectris change. Verify with:
+
+```bash
+git fetch upstream
+git rev-list --count upstream/master..origin/master   # must be 0
+```
+
+Upstream syncs go `master` → `dev`: fast-forward `master` to the new upstream commit, then merge `master` into `dev` and resolve there.
+
+Opening a PR against `master` is always wrong. Its content will be absent from `dev`, and a release cut afterwards silently ships without it, with nothing failing to warn you. If it happens, merge `master` into `dev` to recover the work, then reset `master` back to the upstream commit.
+
+Older branches on the remote (`symlinks`, `fix/utf-8`, `ci/dev_releases`, `dectris-master`, `perf-fio-sync-master`, …) predate this layout and are superseded. Their content is already in `dev`; do not branch from them.
 
 ## Releasing
 
