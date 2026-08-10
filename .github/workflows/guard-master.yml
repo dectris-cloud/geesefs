@@ -1,0 +1,30 @@
+---
+# `master` mirrors yandex-cloud/geesefs and must never carry a dectris change.
+# Upstream syncs are pushed to it directly, so a pull request against it is
+# always a mistake: its content would be absent from `dev`, and a release cut
+# afterwards would silently ship without it. That is what happened with #7.
+#
+# Branch protection would be the real enforcement, but it needs org admin.
+# This makes the mistake loud at PR time instead of silent.
+name: Guard master
+
+on:
+  pull_request:
+    branches: ["master"]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  reject:
+    name: PRs must target dev
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail, master is an upstream mirror
+        run: |
+          echo "::error::This pull request targets 'master', which is a read-only mirror of yandex-cloud/geesefs."
+          echo "::error::Retarget it to 'dev'. See the Branches section of CLAUDE.md."
+          exit 1
