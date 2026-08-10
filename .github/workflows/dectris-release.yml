@@ -8,10 +8,12 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release version (e.g. 0.43.8-dc.1). A 'v' prefix will be added for the tag/release."
+        # Deliberately has no default: it must match GEESEFS_VERSION in
+        # core/cfg/flags.go, and a default here goes stale the moment that
+        # constant moves. Pass it explicitly at dispatch time.
+        description: "Release version, must match GEESEFS_VERSION in core/cfg/flags.go (e.g. 0.43.8-dc.2). A 'v' prefix is added for the tag/release."
         required: true
         type: string
-        default: '0.43.8-dc.1'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

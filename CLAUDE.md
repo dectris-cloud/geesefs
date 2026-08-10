@@ -80,6 +80,42 @@ cd docker && just test-multipart-boundary
 
 **Virtual symlinks**: Symlinks stored in `.geesefs_symlinks` (no S3 object) are distinguished from S3-backed symlinks via `Inode.isVirtualSymlink` bool field. Always use this field for detection, not `userMetadata[SymlinkAttr] != nil`.
 
+## Branches
+
+**`dev` is the main branch.** All dectris development on geesefs lives here, every PR targets it, and releases are cut from it. Treat it as the trunk.
+
+**`master` is a read-only mirror of `yandex-cloud/geesefs`.** It must always point at the exact upstream commit the fork is based on, and must never carry a dectris change. Verify with:
+
+```bash
+git fetch upstream
+git rev-list --count upstream/master..origin/master   # must be 0
+```
+
+Upstream syncs go `master` → `dev`: fast-forward `master` to the new upstream commit, then merge `master` into `dev` and resolve there.
+
+Opening a PR against `master` is always wrong. Its content will be absent from `dev`, and a release cut afterwards silently ships without it, with nothing failing to warn you. If it happens, merge `master` into `dev` to recover the work, then reset `master` back to the upstream commit.
+
+Older branches on the remote (`symlinks`, `fix/utf-8`, `ci/dev_releases`, `dectris-master`, `perf-fio-sync-master`, …) predate this layout and are superseded. Their content is already in `dev`; do not branch from them.
+
+## Releasing
+
+The version lives in one place: `GEESEFS_VERSION` in `core/cfg/flags.go`. Bump it, merge to `dev`, then dispatch:
+
+```bash
+gh workflow run dectris-release.yml -f version=<version> --ref dev
+gh release edit v<version> --prerelease=false --latest
+```
+
+The version is a dispatch parameter, so do not edit the workflow to change it. It has no default on purpose: a default duplicates `GEESEFS_VERSION` and goes stale the moment that constant moves.
+
+A dispatched run is marked prerelease, hence the `release edit`. Pushing a `v*` tag instead publishes a full release directly, but only the dispatch path is exercised regularly.
+
+Tag scheme: `v<upstream-version>-dc.<n>`, e.g. `v0.43.8-dc.2`.
+
 ## Go Module
 
 Module: `github.com/yandex-cloud/geesefs` (Go 1.25). Uses the stock `github.com/aws/aws-sdk-go` with no `replace` directive. Yandex-only S3 extensions (`PatchObject`, `ListObjectsV1Ext`) live in `core/ycs3ext/`, built on the SDK's `request.Request` rather than a forked SDK.
+
+## Downstream
+
+`compute-amis` pins the version in `terraform/infrastructure/main.tf` (`geesefs_version`) and its AMI recipe downloads the release asset. A new release needs a matching bump there.
