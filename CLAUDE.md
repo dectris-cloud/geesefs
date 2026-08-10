@@ -99,18 +99,44 @@ Older branches on the remote (`symlinks`, `fix/utf-8`, `ci/dev_releases`, `dectr
 
 ## Releasing
 
-The version lives in one place: `GEESEFS_VERSION` in `core/cfg/flags.go`. Bump it, merge to `dev`, then dispatch:
+Releases are cut by **pushing a tag**. Tag scheme: `v<upstream-version>-dc.<n>`, e.g. `v0.43.8-dc.2`.
+
+The version lives in one place: `GEESEFS_VERSION` in `core/cfg/flags.go`. It must match the tag.
+
+```bash
+# 1. Bump GEESEFS_VERSION in core/cfg/flags.go, land it on dev via PR.
+
+# 2. Tag the exact dev commit that carries the bump.
+git fetch origin
+git tag -a v<version> origin/dev -m "Release <version>"
+git push origin v<version>
+```
+
+That is the whole process. The tag push triggers `dectris-release.yml`, which builds a static linux/amd64 binary from the tagged commit and publishes a full release with `geesefs` and `checksums.txt` attached. No promote step is needed.
+
+Push the tag only after the version bump is on `dev`, and tag `origin/dev` rather than a local branch, so the tag lands on the reviewed commit.
+
+Verify afterwards, the tag must point at the commit that was built:
+
+```bash
+git ls-remote --tags origin v<version>   # compare against origin/dev
+gh release view v<version> --json tagName,isPrerelease,assets
+```
+
+### Manual dispatch (fallback)
 
 ```bash
 gh workflow run dectris-release.yml -f version=<version> --ref dev
 gh release edit v<version> --prerelease=false --latest
 ```
 
-The version is a dispatch parameter, so do not edit the workflow to change it. It has no default on purpose: a default duplicates `GEESEFS_VERSION` and goes stale the moment that constant moves.
+Use this only when a tag push fails to trigger, as happened during a GitHub Actions incident where webhook delivery was throttled. It is second choice: it marks the release prerelease, so it needs the follow-up `release edit`, and it has the action create the tag rather than tagging deliberately.
 
-A dispatched run is marked prerelease, hence the `release edit`. Pushing a `v*` tag instead publishes a full release directly, but only the dispatch path is exercised regularly.
+The dispatch input has no default on purpose: a default duplicates `GEESEFS_VERSION` and goes stale the moment that constant moves. Do not edit the workflow to change the version; pass it at dispatch time.
 
-Tag scheme: `v<upstream-version>-dc.<n>`, e.g. `v0.43.8-dc.2`.
+### Downstream
+
+A release is not finished until `compute-amis` is bumped, see the Downstream section below.
 
 ## Go Module
 
