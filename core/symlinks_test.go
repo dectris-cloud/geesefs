@@ -1297,3 +1297,38 @@ func (s *SymlinksTest) TestBatchRemoveOnlySymlink(t *C) {
 	parent.mu.Unlock()
 }
 
+func (s *SymlinksTest) TestCacheNotModifiedRearmsTTL(t *C) {
+	mock := newMockConditionalBackend()
+	_, parent := newTestDirInode(mock, 1*time.Hour)
+
+	// Give the directory a symlinks file so the reload can come back 304.
+	data := NewSymlinksFileData()
+	data.AddSymlink("link1", "../target1")
+	_, err := SaveSymlinksFile(mock, "", ".geesefs_symlinks", data, "")
+	t.Assert(err, IsNil)
+
+	gets := 0
+	mock.onGetBlob = func(param *GetBlobInput) { gets++ }
+
+	parent.mu.Lock()
+	defer parent.mu.Unlock()
+
+	// First load populates the cache and records the ETag.
+	err = parent.loadSymlinksCache()
+	t.Assert(err, IsNil)
+	t.Assert(gets, Equals, 1)
+	t.Assert(parent.dir.symlinksCache.HasSymlink("link1"), Equals, true)
+
+	// Expire the cache; the reload sends If-None-Match and gets a 304 back.
+	parent.dir.symlinksCacheTime = time.Time{}
+	err = parent.loadSymlinksCache()
+	t.Assert(err, IsNil)
+	t.Assert(gets, Equals, 2)
+
+	// The 304 confirmed the cache is current, so the next miss within the TTL
+	// must be served locally instead of re-issuing the conditional GET.
+	err = parent.loadSymlinksCache()
+	t.Assert(err, IsNil)
+	t.Assert(gets, Equals, 2)
+	t.Assert(parent.dir.symlinksCache.HasSymlink("link1"), Equals, true)
+}
