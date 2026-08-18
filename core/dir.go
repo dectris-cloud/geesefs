@@ -1876,9 +1876,12 @@ func (parent *Inode) loadSymlinksCache() error {
 		return err
 	}
 
-	// If data is nil, the file hasn't changed (304 Not Modified)
+	// If data is nil, the file hasn't changed (304 Not Modified). The cached copy
+	// is still current, so re-arm the TTL: without this the guard above never
+	// passes again and every later miss re-issues the conditional GET.
 	if data == nil {
 		s3Log.Debugf("loadSymlinksCache: file unchanged (304), dir=%v", parent.FullName())
+		parent.dir.symlinksCacheTime = time.Now()
 		return nil
 	}
 
