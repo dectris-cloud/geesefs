@@ -516,8 +516,12 @@ func (s *BackendTest) TestPutBlobIfMatchFailsIfObjectNotExists(t *C) {
 		IfMatch: &etag,
 	})
 
+	// S3 answers 404 NoSuchKey here, not 412
 	t.Assert(err, NotNil)
-	t.Assert(err.Error(), Matches, ".*PreconditionFailed.*does not exist.*")
+	t.Assert(isNotExist(err), Equals, true)
+	t.Assert(isPreconditionFailed(err), Equals, false)
+	_, created := mock.objects["non-existent-key"]
+	t.Assert(created, Equals, false)
 }
 
 // ============================================================================
