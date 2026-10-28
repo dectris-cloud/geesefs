@@ -1,6 +1,6 @@
 # Conditional Writes Test
 
-This test validates S3 conditional write operations (If-Match / If-None-Match) directly against MinIO.
+This test validates S3 conditional write operations (If-Match / If-None-Match) directly against the RustFS S3 server.
 
 ## What it tests
 

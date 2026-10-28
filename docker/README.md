@@ -45,7 +45,7 @@ just clean-all
 
 ### Conditional Writes Test (`tests/conditional_writes/`)
 
-Tests S3 conditional writes (If-Match/If-None-Match) directly against MinIO using the S3 API.
+Tests S3 conditional writes (If-Match/If-None-Match) directly against the RustFS S3 server using the S3 API.
 
 ```bash
 cd tests/conditional_writes
@@ -79,7 +79,7 @@ just shell-1     # Shell into mount 1
 just shell-2     # Shell into mount 2
 just logs        # View GeeseFS logs
 just ls-symlinks # Show .geesefs_symlinks files
-just console     # Open MinIO web console
+just console     # Open RustFS web console
 just clean       # Cleanup
 ```
 

@@ -32,7 +32,7 @@ AWS_SECRET_ACCESS_KEY = os.environ.get("AWS_SECRET_ACCESS_KEY", "minioadmin")
 
 
 def get_s3_client():
-    """Create an S3 client configured for MinIO."""
+    """Create an S3 client configured for the test S3 server."""
     return boto3.client(
         "s3",
         endpoint_url=S3_ENDPOINT,
@@ -368,7 +368,7 @@ def main():
 
     s3 = get_s3_client()
 
-    # Wait for MinIO to be ready and ensure bucket exists
+    # Wait for the S3 server to be ready and ensure bucket exists
     print("\nWaiting for S3 to be ready...")
     for i in range(30):
         try:
@@ -414,7 +414,7 @@ def main():
 
     if failed > 0:
         print("\n⚠️  Some tests failed. This may indicate:")
-        print("   - MinIO doesn't support conditional writes (If-Match/If-None-Match)")
+        print("   - The S3 server doesn't support conditional writes (If-Match/If-None-Match)")
         print("   - The S3 backend implementation needs adjustment")
         sys.exit(1)
     else:

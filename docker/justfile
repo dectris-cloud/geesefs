@@ -110,7 +110,7 @@ symlinks-shell-2:
 
 # List symlinks in bucket
 symlinks-ls:
-    docker exec symlinks-test-minio mc find myminio/testbucket --name ".geesefs_symlinks" --print || echo "None found"
+    docker exec symlinks-test-s3-client aws s3 ls --recursive s3://testbucket/ | grep -F ".geesefs_symlinks" || echo "None found"
 
 # Clean symlinks test
 symlinks-clean:
