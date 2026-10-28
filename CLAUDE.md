@@ -144,4 +144,4 @@ Module: `github.com/yandex-cloud/geesefs` (Go 1.27.3). The `go` line in `go.mod`
 
 ## Downstream
 
-`compute-amis` pins the version in `terraform/infrastructure/main.tf` (`geesefs_version`) and its AMI recipe downloads the release asset. A new release needs a matching bump there.
+`compute-amis` pins the version in `terraform/infrastructure/recipes.tf` (`geesefs_version`) and its AMI recipe downloads the release asset. A new release needs a matching bump there.
