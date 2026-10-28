@@ -700,6 +700,71 @@ func (s *SymlinksTest) TestSaveWithRetryZeroMaxRetries(t *C) {
 	t.Assert(mergeCallCount, Equals, 0)
 }
 
+func (s *SymlinksTest) TestSaveWithRetryRecreatesFileDeletedConcurrently(t *C) {
+	mock := newMockConditionalBackend()
+
+	// The cached ETag points at a file another mount has since deleted, so the
+	// If-Match write gets 404 instead of 412.
+	data := NewSymlinksFileData()
+	data.AddSymlink("newlink", "../newtarget")
+
+	mergeCallCount := 0
+	mergeFn := func(current *SymlinksFileData) (*SymlinksFileData, error) {
+		mergeCallCount++
+		current.AddSymlink("newlink", "../newtarget")
+		return current, nil
+	}
+
+	newETag, err := SaveSymlinksFileWithRetry(mock, "testdir", ".geesefs_symlinks", data, "\"etag-deleted\"", mergeFn, 3)
+	t.Assert(err, IsNil)
+	t.Assert(newETag, Not(Equals), "")
+	t.Assert(mergeCallCount, Equals, 1)
+
+	obj := mock.objects["testdir/.geesefs_symlinks"]
+	t.Assert(obj, NotNil)
+	parsed, _ := ParseSymlinksFile(obj.data)
+	t.Assert(parsed.HasSymlink("newlink"), Equals, true)
+}
+
+func (s *SymlinksTest) TestSaveWithRetryRemovalOnDeletedFileIsNoOp(t *C) {
+	mock := newMockConditionalBackend()
+
+	// Removing the last symlink from a file another mount already deleted
+	// must succeed without re-creating the file.
+	mergeFn := func(current *SymlinksFileData) (*SymlinksFileData, error) {
+		current.RemoveSymlink("oldlink")
+		return current, nil
+	}
+
+	newETag, err := SaveSymlinksFileWithRetry(mock, "testdir", ".geesefs_symlinks", NewSymlinksFileData(), "\"etag-deleted\"", mergeFn, 3)
+	t.Assert(err, IsNil)
+	t.Assert(newETag, Equals, "")
+	_, exists := mock.objects["testdir/.geesefs_symlinks"]
+	t.Assert(exists, Equals, false)
+}
+
+func (s *SymlinksTest) TestSaveWithRetryNoRetryOn404WithoutIfMatch(t *C) {
+	mock := newMockConditionalBackend()
+
+	// A 404 on a create (If-None-Match) is not a conflict, e.g. a missing bucket.
+	notFound := awserr.NewRequestFailure(awserr.New("NoSuchBucket", "The specified bucket does not exist", nil), 404, "")
+	errorMock := &errorBackend{mock, notFound}
+
+	data := NewSymlinksFileData()
+	data.AddSymlink("link1", "../target1")
+
+	mergeCallCount := 0
+	mergeFn := func(current *SymlinksFileData) (*SymlinksFileData, error) {
+		mergeCallCount++
+		return data, nil
+	}
+
+	_, err := SaveSymlinksFileWithRetry(errorMock, "testdir", ".geesefs_symlinks", data, "", mergeFn, 3)
+	t.Assert(err, NotNil)
+	t.Assert(isNotExist(err), Equals, true)
+	t.Assert(mergeCallCount, Equals, 0)
+}
+
 // alwaysConflictBackend wraps a backend and always returns precondition failed on PutBlob
 type alwaysConflictBackend struct {
 	*mockConditionalBackend
