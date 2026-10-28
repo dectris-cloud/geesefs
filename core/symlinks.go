@@ -230,7 +230,6 @@ func isNotModified(err error) bool {
 	return err.Error() == "304 Not Modified"
 }
 
-
 // SaveSymlinksFile saves the .symlinks file to cloud storage with conditional write
 // If expectedETag is non-empty, uses conditional PUT to avoid race conditions
 // Returns the new ETag and any error
@@ -369,8 +368,11 @@ func SaveSymlinksFileWithRetry(
 			return newETag, nil
 		}
 
-		// If not a precondition failure, return the error immediately
-		if !isPreconditionFailed(err) {
+		// S3 answers an If-Match write with 404 when another mount deleted the
+		// file, so that is a conflict too; the reload below then treats the file
+		// as empty. Any other error is returned immediately.
+		deletedConcurrently := currentETag != "" && isNotExist(err)
+		if !isPreconditionFailed(err) && !deletedConcurrently {
 			return "", err
 		}
 

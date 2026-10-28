@@ -24,6 +24,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/aws/aws-sdk-go/aws/awserr"
 	. "gopkg.in/check.v1"
 )
 
@@ -318,10 +319,12 @@ func (m *mockConditionalBackend) PutBlob(param *PutBlobInput) (*PutBlobOutput, e
 	}
 
 	// Check If-Match condition (optimistic locking)
-	// Returns 412 Precondition Failed if ETag doesn't match
+	// Returns 412 Precondition Failed if ETag doesn't match, and 404 if the key
+	// does not exist, as S3 does.
 	if param.IfMatch != nil {
 		if !exists {
-			return nil, fmt.Errorf("PreconditionFailed: object does not exist for If-Match")
+			return nil, awserr.NewRequestFailure(
+				awserr.New("NoSuchKey", "The specified key does not exist.", nil), 404, "")
 		}
 		if *param.IfMatch != obj.etag {
 			return nil, fmt.Errorf("PreconditionFailed: ETag mismatch, expected %s, got %s", *param.IfMatch, obj.etag)
