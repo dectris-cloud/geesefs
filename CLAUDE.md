@@ -134,14 +134,6 @@ Use this only when a tag push fails to trigger, as happened during a GitHub Acti
 
 The dispatch input has no default on purpose: a default duplicates `GEESEFS_VERSION` and goes stale the moment that constant moves. Do not edit the workflow to change the version; pass it at dispatch time.
 
-### Downstream
-
-A release is not finished until `compute-amis` is bumped, see the Downstream section below.
-
 ## Go Module
 
 Module: `github.com/yandex-cloud/geesefs` (Go 1.27.3). The `go` line in `go.mod` is the Go version source: the dectris workflows read it through `go-version-file`, and only the `Dockerfile.build` and `docker/tests/*/Dockerfile.geesefs` image tags repeat it. Go 1.25 is end-of-life and has no fix for the eMudhra intermediate-key compromise; keep the toolchain at 1.26.10 / 1.27.3 or newer. Uses the stock `github.com/aws/aws-sdk-go` with no `replace` directive. Yandex-only S3 extensions (`PatchObject`, `ListObjectsV1Ext`) live in `core/ycs3ext/`, built on the SDK's `request.Request` rather than a forked SDK.
-
-## Downstream
-
-`compute-amis` pins the version in `terraform/infrastructure/main.tf` (`geesefs_version`) and its AMI recipe downloads the release asset. A new release needs a matching bump there.
