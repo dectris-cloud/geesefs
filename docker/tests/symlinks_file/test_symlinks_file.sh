@@ -10,7 +10,7 @@
 
 MOUNT1="symlinks-test-mount-1"
 MOUNT2="symlinks-test-mount-2"
-MINIO="symlinks-test-minio"
+S3CLIENT="symlinks-test-s3-client"
 MOUNT_PATH="/mnt/s3"
 SYMLINKS_FILE=".geesefs_symlinks"
 PASSED=0
@@ -97,7 +97,7 @@ get_symlinks_file_s3() {
     else
         key="${dir_prefix}/${SYMLINKS_FILE}"
     fi
-    docker exec $MINIO mc cat myminio/testbucket/"$key" 2>/dev/null || echo ""
+    docker exec $S3CLIENT aws s3 cp "s3://testbucket/$key" - 2>/dev/null || echo ""
 }
 
 sync_and_wait() {
@@ -122,9 +122,6 @@ if ! docker exec $MOUNT2 mountpoint -q $MOUNT_PATH; then
     exit 1
 fi
 echo "Both mounts are ready!"
-
-log_info "Setting up MinIO client..."
-docker exec $MINIO mc alias set myminio http://localhost:9000 minioadmin minioadmin >/dev/null 2>&1 || true
 
 # ==============================================================================
 log_header "TEST 1: Create symlink, verify .geesefs_symlinks file"

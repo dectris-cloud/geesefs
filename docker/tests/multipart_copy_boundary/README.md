@@ -22,7 +22,7 @@ of ~27/52/103/127 MiB.
 
 ## What the test does
 
-1. Starts MinIO + GeeseFS with `--part-sizes 5:20,25:10 --debug_s3 --debug_fuse`.
+1. Starts RustFS (S3 server) + GeeseFS with `--part-sizes 5:20,25:10 --debug_s3 --debug_fuse`.
 2. For each unaligned size, runs `fio` to write+fsync the file, then a partial
    `dd` overwrite of the middle followed by `sync`. The second flush exercises
    `copyUnmodifiedParts` on the unmodified leading/trailing parts.

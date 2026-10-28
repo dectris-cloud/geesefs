@@ -26,7 +26,7 @@ just clean
 
 ## Files
 
-- `docker-compose.yml` - Docker Compose configuration with MinIO + 2 GeeseFS mounts
+- `docker-compose.yml` - Docker Compose configuration with RustFS (S3 server) + 2 GeeseFS mounts
 - `Dockerfile.geesefs` - Builds GeeseFS binary with FUSE support
 - `docker-entrypoint.sh` - Container entrypoint script
 - `test_geesefs_conditional.sh` - Shell test script
