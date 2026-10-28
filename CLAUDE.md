@@ -140,7 +140,7 @@ A release is not finished until `compute-amis` is bumped, see the Downstream sec
 
 ## Go Module
 
-Module: `github.com/yandex-cloud/geesefs` (Go 1.25). Uses the stock `github.com/aws/aws-sdk-go` with no `replace` directive. Yandex-only S3 extensions (`PatchObject`, `ListObjectsV1Ext`) live in `core/ycs3ext/`, built on the SDK's `request.Request` rather than a forked SDK.
+Module: `github.com/yandex-cloud/geesefs` (Go 1.27.3). The `go` line in `go.mod` is the Go version source: the dectris workflows read it through `go-version-file`, and only the `Dockerfile.build` and `docker/tests/*/Dockerfile.geesefs` image tags repeat it. Go 1.25 is end-of-life and has no fix for the eMudhra intermediate-key compromise; keep the toolchain at 1.26.10 / 1.27.3 or newer. Uses the stock `github.com/aws/aws-sdk-go` with no `replace` directive. Yandex-only S3 extensions (`PatchObject`, `ListObjectsV1Ext`) live in `core/ycs3ext/`, built on the SDK's `request.Request` rather than a forked SDK.
 
 ## Downstream
 
